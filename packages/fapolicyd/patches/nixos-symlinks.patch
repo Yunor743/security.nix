@@ -1,0 +1,35 @@
+NixOS manages /etc declaratively via symlinks to the Nix store.
+fapolicyd uses O_NOFOLLOW when opening its config and rules files,
+which breaks on NixOS where /etc/fapolicyd/* are symlinks.
+Remove O_NOFOLLOW so the daemon can follow symlinks.
+
+diff --git a/src/library/daemon-config.c b/src/library/daemon-config.c
+index a853163..2b270bf 100644
+--- a/src/library/daemon-config.c
++++ b/src/library/daemon-config.c
+@@ -171,7 +171,7 @@ int load_daemon_config(conf_t *config)
+ 	clear_daemon_config(config);
+ 
+ 	/* open the file */
+-	fd = open(CONFIG_FILE, O_RDONLY|O_NOFOLLOW);
++	fd = open(CONFIG_FILE, O_RDONLY);
+ 	if (fd < 0) {
+ 		if (errno != ENOENT) {
+ 			msg(LOG_ERR, "Error opening config file (%s)",
+diff --git a/src/library/policy.c b/src/library/policy.c
+index 922e0a8..f7f7fc0 100644
+--- a/src/library/policy.c
++++ b/src/library/policy.c
+@@ -355,10 +355,10 @@ static FILE *open_file(char **identity)
+ 
+ 	// Now open the file and load them one by one. We default to
+ 	// opening the old file first in case there are both
+-	fd = open(OLD_RULES_FILE, O_NOFOLLOW|O_RDONLY);
++	fd = open(OLD_RULES_FILE, O_RDONLY);
+ 	if (fd < 0) {
+ 		// See if the new rules exist
+-		fd = open(RULES_FILE, O_NOFOLLOW|O_RDONLY);
++		fd = open(RULES_FILE, O_RDONLY);
+ 		if (fd < 0) {
+ 			msg(LOG_ERR, "Error opening rules file (%s)",
+ 				strerror(errno));

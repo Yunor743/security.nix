@@ -1,0 +1,22 @@
+Nix build sandboxes lack the `rev` and `realpath` commands that the
+upstream m4/dyn_linker.m4 macro uses to discover the dynamic linker.
+Replace the macro with a version that accepts the path via @LD_SO_PATH@
+which the Nix derivation substitutes during postPatch.
+
+diff --git a/m4/dyn_linker.m4 b/m4/dyn_linker.m4
+index c0c8aa3..c9c36b2 100644
+--- a/m4/dyn_linker.m4
++++ b/m4/dyn_linker.m4
+@@ -1,10 +1,8 @@
+ AC_DEFUN([LD_SO_PATH],
+ [
+-  bash_path=`command -v bash`
+-  xpath1=`readelf -e $bash_path | grep Requesting | sed 's/.$//' | rev | cut -d" " -f1 | rev`
+-  xpath=`realpath $xpath1`
++  xpath="@LD_SO_PATH@"
+   if test ! -f "$xpath" ; then
+-    AC_MSG_ERROR([Cant find the dynamic linker])
++    AC_MSG_ERROR([Cant find the dynamic linker: $xpath])
+   fi
+   echo "dynamic linker is.....$xpath"
+   AC_DEFINE_UNQUOTED(SYSTEM_LD_SO, ["$xpath"], [dynamic linker])
