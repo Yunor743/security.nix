@@ -29,8 +29,8 @@
           system = "x86_64-linux";
           specialArgs = { inherit self; };
           modules = [
-            # { nixpkgs.overlays = [ self.overlays.default ]; }
-            inputs.security-from-local.security
+            { nixpkgs.overlays = [ inputs.security-from-local.overlays.default ]; }
+            inputs.security-from-local.nixosModules.security
             inputs.disko.nixosModules.disko
             inputs.impermanence.nixosModules.impermanence
             ./fortress.nix
@@ -40,8 +40,8 @@
           system = "x86_64-linux";
           specialArgs = { inherit self; };
           modules = [
-            # { nixpkgs.overlays = [ self.overlays.default ]; }
-            inputs.security-from-github.security
+            { nixpkgs.overlays = [ inputs.security-from-github.overlays.default ]; }
+            inputs.security-from-github.nixosModules.security
             inputs.disko.nixosModules.disko
             inputs.impermanence.nixosModules.impermanence
             ./fortress.nix

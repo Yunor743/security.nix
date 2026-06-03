@@ -9,7 +9,7 @@
 ```
 .
 ├── flake.nix                  # Flake entry point: packages, modules, overlays, checks, formatter
-├── flake.lock                 # Locked dependency versions
+├── flake.lock                 # Locked dependency versions (nixpkgs only)
 ├── shell.nix                  # Development shell (nixfmt-rfc-style, nil)
 ├── packages/
 │   ├── fapolicyd/
@@ -28,18 +28,19 @@
 │   └── rustinel.nix           # NixOS module: services.rustinel options & config
 ├── checks/
 │   └── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
-├── examples/
-│   └── fortress/
-│       ├── default.nix        # Example NixOS config (fapolicyd + rustinel + disko)
-│       └── disko.nix          # Disk layout (btrfs + ESP via disko)
-└── doc/
-    └── README.md              # Full documentation
+├── example/
+│   ├── flake.nix              # Standalone example flake (from-local / from-github sources)
+│   ├── fortress.nix           # Example NixOS host config (fapolicyd + rustinel + disko + impermanence)
+│   ├── disko.nix              # Disk layout (btrfs + ESP via disko)
+│   ├── impermanence.nix       # Btrfs root rollback + persistence via impermanence
+│   └── README.md              # Deployment instructions (nixos-anywhere, nixos-rebuild)
+└── README.md                  # Full documentation
 ```
 
 ## Key Concepts
 
-- **fapolicyd** — File access policy daemon for application whitelisting. On NixOS, `/etc` is a symlink forest to `/nix/store`, so upstream's `O_NOFOLLOW` breaks. The package patches this out. The module provides three profiles: `nixos` (trust `/nix/store` + `/run/wrappers`), `known-libs` (trust db + shared libs), `custom` (no defaults). Always start with `permissive = true` to avoid deadlocks.
-- **rustinel** — eBPF-based EDR (Sigma/YARA/IOC). Distributed as prebuilt musl binaries. The module generates TOML config, manages YARA/Sigma/IOC rule files, and sets `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_SYS_RESOURCE`/`CAP_SYS_ADMIN` capabilities automatically. Requires Linux 5.8+ with BTF.
+- **fapolicyd** — File access policy daemon for application whitelisting. On NixOS, `/etc` is a symlink forest to `/nix/store`, so upstream's `O_NOFOLLOW` breaks. The package patches this out. The module provides three profiles: `nixos` (trust `/nix/store` + `/run/wrappers`), `known-libs` (trust db + shared libs), `custom` (no defaults). All deny rules use `deny_syslog` (not `deny_audit`) because NixOS has no auditd — `deny_audit` events go to the audit subsystem which is unconfigured, making denials invisible in the journal. Always start with `permissive = true` to avoid deadlocks.
+- **rustinel** — eBPF-based EDR (Sigma/YARA/IOC). Distributed as prebuilt musl binaries. The module generates TOML config, manages YARA/Sigma/IOC rule files, and sets `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_SYS_RESOURCE`/`CAP_SYS_ADMIN` capabilities automatically. Requires Linux 5.8+ with BTF. When `yaraRulesPackage` or `sigmaRulesPackage` are set, the module deploys the packaged rules instead of the demo defaults. The default Sigma rule matches `whoami` execution, including NixOS multi-call `coreutils` binaries via `CommandLine|contains: whoami`. Known limitation: YARA scanning does not trigger on process-start events with relative paths (`./binary`) — only absolute paths are scanned.
 - **YARA Forge rules** — Curated YARA rule sets. The rustinel module strips `console.log` calls from YARA rules (JavaScript `console` is not available in YARA's native engine).
 - **SigmaHQ rules** — Complete Sigma detection rules for use with rustinel.
 
@@ -58,8 +59,8 @@ nix flake check
 # Format Nix files
 nix fmt
 
-# Build the fortress example VM
-nix build .#nixosConfigurations.fortress.config.system.build.vm
+# Build the fortress example VM (from example/ directory)
+nix build example#nixosConfigurations.from-local.config.system.build.vm
 ```
 
 ## Formatting & Linting
@@ -76,15 +77,20 @@ nix build .#nixosConfigurations.fortress.config.system.build.vm
 - Package calls use `pkgs.callPackage` pattern
 - TOML config generation for rustinel is done manually (no TOML library in nixpkgs lib)
 - Patches are stored in `packages/<pkg>/patches/` and described with a header comment
-- The `rustinel` package also strips `console.log` from YARA rules using a Perl one-liner in the module — this is because YARA Forge rules sometimes include JavaScript `console.log` debugging statements that conflict with native YARA
+- The `rustinel` module strips `console.log` from YARA rules using a Perl one-liner — YARA Forge rules sometimes include JavaScript `console.log` debugging statements that conflict with native YARA
+- When `yaraRulesPackage` is set, a symlink to the YARA Forge rules file is placed in `/etc/rustinel/rules/yara/` instead of the demo rule; likewise for `sigmaRulesPackage` with a `.keep` placeholder
 
 ## Architecture Decisions
 
 - fapolicyd module inlines rule generation: rule files are `attrsOf lines` sorted by natural sort order, compiled into a single `compiled.rules` via `pkgs.runCommandLocal`
+- fapolicyd uses `deny_syslog` instead of `deny_audit` — on NixOS, auditd is not configured by default, so `deny_audit` events are invisible; `deny_syslog` sends denials to the journal where they appear as `rule=N dec=deny_syslog perm=execute ... path=/path/to/binary`
+- fapolicyd has a known LMDB bug: `open_dbi:Permission denied` spam in logs — the daemon still functions correctly (rules are evaluated, access decisions are made), but the trust database is uninitialized. This is cosmetic and does not affect policy enforcement.
 - Macro substitution (`%python3_path%`, `%ld_so_path%`) happens in `environment.etc` using `lib.replaceStrings`
 - fapolicyd assertions prevent dangerous configs (e.g., enforcing mode without any trusted paths)
 - rustinel's `yaraRulesPackage` and `sigmaRulesPackage` are nullable so the module works with or without external rule packages
-- The `fortress` example uses `disko` for declarative disk partitioning (btrfs + ESP)
+- When a rule package is provided, the TOML config paths point to the nix store (`/nix/store/.../share/yara-forge` or `/nix/store/.../share/sigma`), and symlinks are placed in `/etc/rustinel/rules/` for discoverability
+- rustinel default Sigma rule uses `Image|endswith: [/whoami, /coreutils]` + `CommandLine|contains: whoami` to handle NixOS multi-call binaries where `whoami` is a symlink to `coreutils`
+- The example uses `disko` for declarative disk partitioning (btrfs + ESP) and `impermanence` for btrfs root rollback on boot
 - The overlay exposes all four packages so `nixpkgs.overlays = [ self.overlays.default ]` makes them available as `pkgs.fapolicyd`, `pkgs.rustinel`, etc.
 
 ## Testing
@@ -92,6 +98,7 @@ nix build .#nixosConfigurations.fortress.config.system.build.vm
 - Tests are NixOS VM tests in `checks/nixos-test.nix`
 - Three test variants: `permissive` (nixos profile, permissive mode), `enforcing-nixos` (nixos profile, enforcing mode), `known-libs` (known-libs profile, permissive mode)
 - Tests verify: daemon is active, `fapolicyd-cli --list` works, config files exist in `/etc`, user/group exist
+- No automated tests for rustinel yet
 - Run all tests: `nix flake check`
 
 ## Warnings
@@ -99,3 +106,6 @@ nix build .#nixosConfigurations.fortress.config.system.build.vm
 - **Never** ptrace or strace the fapolicyd daemon — it will deadlock the system
 - Always start with `permissive = true` and verify policy before switching to enforcing mode
 - The `aarch64-linux` hash for rustinel is `lib.fakeHash` and needs to be updated with the real hash
+- fapolicyd's LMDB trust database produces `open_dbi:Permission denied` log spam — this is a known cosmetic issue and does not affect functionality
+- rustinel YARA scanning does not trigger on process-start events with relative paths (`./binary`) — only absolute paths are scanned. Use absolute paths in detection testing.
+- The example flake (`example/flake.nix`) references `inputs.security-from-local.security` as a combined module output — the main `flake.nix` does not currently expose a `security` output aggregating both modules

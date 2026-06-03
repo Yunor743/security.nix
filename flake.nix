@@ -52,8 +52,11 @@
       nixosModules = {
         fapolicyd = import ./modules/fapolicyd.nix;
         rustinel = import ./modules/rustinel.nix;
-        # default = self.nixosModules.fapolicyd;
+        security = import ./modules/security.nix;
+        default = import ./modules/security.nix;
       };
+
+      security = import ./modules/security.nix;
 
       packages = eachSystem (system: (forSystem system).packages);
 
