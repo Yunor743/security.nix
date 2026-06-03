@@ -1,16 +1,12 @@
 {
-  description = "security — fapolicyd, rustinel, and detection rules for NixOS";
+  description = "Security.nix - Extended endpoint security and detection for nixos";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
-    disko = {
-      url = "github:nix-community/disko";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
-    { self, nixpkgs, ... }@inputs:
+    { self, nixpkgs, ... }:
     let
       supportedSystems = [
         "x86_64-linux"
@@ -56,7 +52,7 @@
       nixosModules = {
         fapolicyd = import ./modules/fapolicyd.nix;
         rustinel = import ./modules/rustinel.nix;
-        default = self.nixosModules.fapolicyd;
+        # default = self.nixosModules.fapolicyd;
       };
 
       packages = eachSystem (system: (forSystem system).packages);
@@ -64,17 +60,5 @@
       checks = eachSystem (system: (forSystem system).checks);
 
       formatter = eachSystem (system: (forSystem system).formatter);
-
-      nixosConfigurations.fortress = nixpkgs.lib.nixosSystem {
-        system = "x86_64-linux";
-        specialArgs = { inherit self; };
-        modules = [
-          self.nixosModules.fapolicyd
-          self.nixosModules.rustinel
-          { nixpkgs.overlays = [ self.overlays.default ]; }
-          inputs.disko.nixosModules.disko
-          ./examples/fortress
-        ];
-      };
     };
 }

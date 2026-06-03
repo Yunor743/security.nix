@@ -8,6 +8,7 @@
     (modulesPath + "/installer/scan/not-detected.nix")
     (modulesPath + "/profiles/qemu-guest.nix")
     ./disko.nix
+    ./impermanence.nix
   ];
 
   console = {
@@ -25,7 +26,8 @@
   users.mutableUsers = false;
 
   users.users.root = {
-    hashedPassword = "$6$dpJu1ZIGiymtrjLN$0hbeqlc112ek0EYJKeVNJni.6ve6MAL5PlfYJQWxGuIELtEQq0nhbAExFCkMfIMaZvbFF6RkjOWRJSBT/F9/t1";
+    # hashedPassword = "$6$dpJu1ZIGiymtrjLN$0hbeqlc112ek0EYJKeVNJni.6ve6MAL5PlfYJQWxGuIELtEQq0nhbAExFCkMfIMaZvbFF6RkjOWRJSBT/F9/t1";
+    initialPassword = "passwd";
   };
 
   users.users.user = {

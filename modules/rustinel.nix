@@ -191,24 +191,47 @@ in
               product: linux
           detection:
               selection:
-                  Image|endswith: '/whoami'
+                  Image|endswith:
+                      - /whoami
+                      - /coreutils
+                  CommandLine|contains: whoami
               condition: selection
           level: low
         ''
 
         + cfg.sigmaRules;
       in
-      {
-        "rustinel/config.toml".source = pkgs.writeText "config.toml" configText;
-        "rustinel/rules/yara/example_test_string.yar".source =
-          pkgs.writeText "example_test_string.yar" defaultYARARules;
-        "rustinel/rules/sigma/linux_whoami.yml".source =
-          pkgs.writeText "linux_whoami.yml" defaultSigmaRules;
-        "rustinel/rules/ioc/hashes.txt".source = pkgs.writeText "hashes.txt" "";
-        "rustinel/rules/ioc/ips.txt".source = pkgs.writeText "ips.txt" "";
-        "rustinel/rules/ioc/domains.txt".source = pkgs.writeText "domains.txt" "";
-        "rustinel/rules/ioc/paths_regex.txt".source = pkgs.writeText "paths_regex.txt" "";
-      };
+      let
+        etcFiles = {
+          "rustinel/config.toml".source = pkgs.writeText "config.toml" configText;
+          "rustinel/rules/ioc/hashes.txt".source = pkgs.writeText "hashes.txt" "";
+          "rustinel/rules/ioc/ips.txt".source = pkgs.writeText "ips.txt" "";
+          "rustinel/rules/ioc/domains.txt".source = pkgs.writeText "domains.txt" "";
+          "rustinel/rules/ioc/paths_regex.txt".source = pkgs.writeText "paths_regex.txt" "";
+        }
+        // (
+          if yaraPkg != null then
+            {
+              "rustinel/rules/yara/yara-forge-rules.yar".source =
+                "${yaraPkg}/share/yara-forge/yara-rules-full.yar";
+            }
+          else
+            {
+              "rustinel/rules/yara/example_test_string.yar".source =
+                pkgs.writeText "example_test_string.yar" defaultYARARules;
+            }
+        )
+        // (
+          if sigmaPkg != null then
+            { "rustinel/rules/sigma/.keep".source = pkgs.writeText ".keep" ""; }
+          else
+            {
+              "rustinel/rules/sigma/linux_whoami.yml".source =
+                pkgs.writeText "linux_whoami.yml" defaultSigmaRules;
+            }
+        );
+      in
+      etcFiles;
 
     environment.systemPackages = [
       cfg.package
