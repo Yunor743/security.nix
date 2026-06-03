@@ -63,25 +63,23 @@ stdenv.mkDerivation (finalAttrs: {
     file
   ];
 
-  buildInputs =
-    [
-      openssl
-      libcap_ng
-      libseccomp
-      lmdb
-      uthash
-      systemd
-      linuxHeaders
-    ]
-    ++ lib.optional withAudit audit;
+  buildInputs = [
+    openssl
+    libcap_ng
+    libseccomp
+    lmdb
+    uthash
+    systemd
+    linuxHeaders
+  ]
+  ++ lib.optional withAudit audit;
 
-  configureFlags =
-    [
-      "--without-rpm"
-      "--without-deb"
-      "--disable-shared"
-    ]
-    ++ lib.optional withAudit "--with-audit";
+  configureFlags = [
+    "--without-rpm"
+    "--without-deb"
+    "--disable-shared"
+  ]
+  ++ lib.optional withAudit "--with-audit";
 
   makeFlags = [
     "sbindir=$(out)/bin"

@@ -19,7 +19,8 @@ let
           services.fapolicyd = {
             enable = true;
             package = fapolicydPkg;
-          } // extraConfig;
+          }
+          // extraConfig;
 
           system.stateVersion = "25.05";
         };

@@ -8,7 +8,8 @@
 let
   cfg = config.services.rustinel;
 
-  yara-forge-strip-console = pkg:
+  yara-forge-strip-console =
+    pkg:
     pkgs.runCommand "yara-forge-stripped" { } ''
       mkdir -p $out/share/yara-forge
       ${pkgs.perl}/bin/perl -0777 -pe 's/\s*and\s+console\.log\s*\([^)]*\)\s*//g; s/console\.log\s*\([^)]*\)\s*and\s*//g; s/^import "console"\n//gm' \
@@ -25,12 +26,14 @@ in
     settings = lib.mkOption {
       type =
         with lib.types;
-        attrsOf (attrsOf (oneOf [
-          bool
-          int
-          str
-          (listOf str)
-        ]));
+        attrsOf (
+          attrsOf (oneOf [
+            bool
+            int
+            str
+            (listOf str)
+          ])
+        );
       default = { };
       description = ''
         Configuration for rustinel's config.toml.
@@ -79,22 +82,16 @@ in
   config = lib.mkIf cfg.enable {
     environment.etc =
       let
-        yaraPkg = if cfg.yaraRulesPackage != null then
-          yara-forge-strip-console cfg.yaraRulesPackage
-        else
-          null;
+        yaraPkg =
+          if cfg.yaraRulesPackage != null then yara-forge-strip-console cfg.yaraRulesPackage else null;
 
         sigmaPkg = cfg.sigmaRulesPackage;
 
-        yaraRulesPath = if yaraPkg != null then
-          "${yaraPkg}/share/yara-forge"
-        else
-          "/etc/rustinel/rules/yara";
+        yaraRulesPath =
+          if yaraPkg != null then "${yaraPkg}/share/yara-forge" else "/etc/rustinel/rules/yara";
 
-        sigmaRulesPath = if sigmaPkg != null then
-          "${sigmaPkg}/share/sigma"
-        else
-          "/etc/rustinel/rules/sigma";
+        sigmaRulesPath =
+          if sigmaPkg != null then "${sigmaPkg}/share/sigma" else "/etc/rustinel/rules/sigma";
 
         defaultConfig = {
           scanner = {
@@ -170,9 +167,7 @@ in
           in
           "[${name}]\n" + lib.concatStringsSep "\n" lines;
 
-        configText = lib.concatStringsSep "\n\n" (
-          lib.mapAttrsToList toTOMLSection mergedConfig
-        );
+        configText = lib.concatStringsSep "\n\n" (lib.mapAttrsToList toTOMLSection mergedConfig);
 
         defaultYARARules = ''
           rule ExampleMarkerString {
@@ -205,17 +200,21 @@ in
       in
       {
         "rustinel/config.toml".source = pkgs.writeText "config.toml" configText;
-        "rustinel/rules/yara/example_test_string.yar".source = pkgs.writeText "example_test_string.yar" defaultYARARules;
-        "rustinel/rules/sigma/linux_whoami.yml".source = pkgs.writeText "linux_whoami.yml" defaultSigmaRules;
+        "rustinel/rules/yara/example_test_string.yar".source =
+          pkgs.writeText "example_test_string.yar" defaultYARARules;
+        "rustinel/rules/sigma/linux_whoami.yml".source =
+          pkgs.writeText "linux_whoami.yml" defaultSigmaRules;
         "rustinel/rules/ioc/hashes.txt".source = pkgs.writeText "hashes.txt" "";
         "rustinel/rules/ioc/ips.txt".source = pkgs.writeText "ips.txt" "";
         "rustinel/rules/ioc/domains.txt".source = pkgs.writeText "domains.txt" "";
         "rustinel/rules/ioc/paths_regex.txt".source = pkgs.writeText "paths_regex.txt" "";
       };
 
-    environment.systemPackages = [ cfg.package ]
-      ++ lib.optional (cfg.yaraRulesPackage != null) cfg.yaraRulesPackage
-      ++ lib.optional (cfg.sigmaRulesPackage != null) cfg.sigmaRulesPackage;
+    environment.systemPackages = [
+      cfg.package
+    ]
+    ++ lib.optional (cfg.yaraRulesPackage != null) cfg.yaraRulesPackage
+    ++ lib.optional (cfg.sigmaRulesPackage != null) cfg.sigmaRulesPackage;
 
     systemd.services.rustinel = {
       description = "Rustinel eBPF Endpoint Detection";

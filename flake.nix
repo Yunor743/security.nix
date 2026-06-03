@@ -37,7 +37,10 @@
             let
               tests = pkgs.callPackage ./checks/nixos-test.nix { self = self; };
             in
-            builtins.removeAttrs tests [ "overrideDerivation" "override" ];
+            builtins.removeAttrs tests [
+              "overrideDerivation"
+              "override"
+            ];
 
           formatter = pkgs.nixfmt-tree;
         };
@@ -65,13 +68,13 @@
       nixosConfigurations.fortress = nixpkgs.lib.nixosSystem {
         system = "x86_64-linux";
         specialArgs = { inherit self; };
-modules = [
-            self.nixosModules.fapolicyd
-            self.nixosModules.rustinel
-            { nixpkgs.overlays = [ self.overlays.default ]; }
-            inputs.disko.nixosModules.disko
-            ./examples/fortress
-          ];
+        modules = [
+          self.nixosModules.fapolicyd
+          self.nixosModules.rustinel
+          { nixpkgs.overlays = [ self.overlays.default ]; }
+          inputs.disko.nixosModules.disko
+          ./examples/fortress
+        ];
       };
     };
 }

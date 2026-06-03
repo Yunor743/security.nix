@@ -10,7 +10,7 @@
         content = {
           type = "gpt";
           partitions = {
-	          boot = {
+            boot = {
               name = "boot";
               size = "1M";
               type = "EF02";
@@ -32,15 +32,21 @@
                 type = "btrfs";
                 extraArgs = [ "-f" ]; # Override existing partition
                 subvolumes = {
-		  # Subvolume name is different from mountpoint
+                  # Subvolume name is different from mountpoint
                   "/root" = {
                     mountpoint = "/";
-                    mountOptions = [ "compress=zstd" "noatime" ];
+                    mountOptions = [
+                      "compress=zstd"
+                      "noatime"
+                    ];
                   };
-		  # Subvolume name is the same as the mountpoint
+                  # Subvolume name is the same as the mountpoint
                   "/nix" = {
                     mountpoint = "/nix";
-                    mountOptions = [ "compress=zstd" "noatime" ];
+                    mountOptions = [
+                      "compress=zstd"
+                      "noatime"
+                    ];
                   };
                 };
               };
@@ -52,4 +58,3 @@
     };
   };
 }
-

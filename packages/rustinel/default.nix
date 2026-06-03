@@ -20,8 +20,11 @@ stdenv.mkDerivation {
   inherit version;
 
   src = fetchurl {
-    url = "https://github.com/Karib0u/rustinel/releases/download/v${version}/rustinel-${version}-${archMap.${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}")}.tar.gz";
-    hash = hashes.${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
+    url = "https://github.com/Karib0u/rustinel/releases/download/v${version}/rustinel-${version}-${
+      archMap.${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}")
+    }.tar.gz";
+    hash =
+      hashes.${stdenv.hostPlatform.system} or (throw "Unsupported system: ${stdenv.hostPlatform.system}");
   };
 
   sourceRoot = "rustinel-${version}-${archMap.${stdenv.hostPlatform.system}}";

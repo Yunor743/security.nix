@@ -3,6 +3,8 @@
 
 ## TODO
 
+- [ ] Add impermanence to fortress
+
 - [x] fapolicyd.nix
 - [-] rustinel.nix
 - [ ] vulnix

@@ -22,6 +22,12 @@
 
   networking.hostName = "fortress";
 
+  users.mutableUsers = false;
+
+  users.users.root = {
+    hashedPassword = "$6$dpJu1ZIGiymtrjLN$0hbeqlc112ek0EYJKeVNJni.6ve6MAL5PlfYJQWxGuIELtEQq0nhbAExFCkMfIMaZvbFF6RkjOWRJSBT/F9/t1";
+  };
+
   users.users.user = {
     isNormalUser = true;
     description = "user";
