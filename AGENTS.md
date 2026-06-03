@@ -25,7 +25,8 @@
 │       └── default.nix        # SigmaHQ detection rules (zip)
 ├── modules/
 │   ├── fapolicyd.nix          # NixOS module: services.fapolicyd options & config
-│   └── rustinel.nix           # NixOS module: services.rustinel options & config
+│   ├── rustinel.nix           # NixOS module: services.rustinel options & config
+│   └── security.nix           # Aggregation module: imports both fapolicyd and rustinel
 ├── checks/
 │   └── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
 ├── example/
@@ -40,7 +41,7 @@
 ## Key Concepts
 
 - **fapolicyd** — File access policy daemon for application whitelisting. On NixOS, `/etc` is a symlink forest to `/nix/store`, so upstream's `O_NOFOLLOW` breaks. The package patches this out. The module provides three profiles: `nixos` (trust `/nix/store` + `/run/wrappers`), `known-libs` (trust db + shared libs), `custom` (no defaults). All deny rules use `deny_syslog` (not `deny_audit`) because NixOS has no auditd — `deny_audit` events go to the audit subsystem which is unconfigured, making denials invisible in the journal. Always start with `permissive = true` to avoid deadlocks.
-- **rustinel** — eBPF-based EDR (Sigma/YARA/IOC). Distributed as prebuilt musl binaries. The module generates TOML config, manages YARA/Sigma/IOC rule files, and sets `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_SYS_RESOURCE`/`CAP_SYS_ADMIN` capabilities automatically. Requires Linux 5.8+ with BTF. When `yaraRulesPackage` or `sigmaRulesPackage` are set, the module deploys the packaged rules instead of the demo defaults. The default Sigma rule matches `whoami` execution, including NixOS multi-call `coreutils` binaries via `CommandLine|contains: whoami`. Known limitation: YARA scanning does not trigger on process-start events with relative paths (`./binary`) — only absolute paths are scanned.
+- **rustinel** — eBPF-based EDR (Sigma/YARA/IOC). Distributed as prebuilt musl binaries. The module generates TOML config, manages YARA/Sigma/IOC rule files, and sets `CAP_BPF`/`CAP_NET_ADMIN`/`CAP_SYS_RESOURCE`/`CAP_SYS_ADMIN` capabilities automatically. Requires Linux 5.8+ with BTF. When `yaraRulesPackage` or `sigmaRulesPackage` are set, the module deploys the packaged rules instead of the demo defaults. The default Sigma rule matches `whoami` execution, including NixOS multi-call `coreutils` binaries via `CommandLine|contains: whoami`. Known limitation: YARA scanning does not trigger on process-start events with relative paths (`./binary`) — only absolute paths are scanned. After a rustinel crash-loop (e.g. from invalid config), the eBPF tracepoints may become orphaned and YARA stops receiving events — a full VM reboot is required to restore eBPF functionality. Valid `match_debug` values are only `"off"` — `"debug"`, `"verbose"`, and `"trace"` all cause crash on startup.
 - **YARA Forge rules** — Curated YARA rule sets. The rustinel module strips `console.log` calls from YARA rules (JavaScript `console` is not available in YARA's native engine).
 - **SigmaHQ rules** — Complete Sigma detection rules for use with rustinel.
 
@@ -108,4 +109,5 @@ nix build example#nixosConfigurations.from-local.config.system.build.vm
 - The `aarch64-linux` hash for rustinel is `lib.fakeHash` and needs to be updated with the real hash
 - fapolicyd's LMDB trust database produces `open_dbi:Permission denied` log spam — this is a known cosmetic issue and does not affect functionality
 - rustinel YARA scanning does not trigger on process-start events with relative paths (`./binary`) — only absolute paths are scanned. Use absolute paths in detection testing.
-- The example flake (`example/flake.nix`) references `inputs.security-from-local.security` as a combined module output — the main `flake.nix` does not currently expose a `security` output aggregating both modules
+- After a rustinel crash-loop (e.g. from invalid `match_debug` config), the eBPF tracepoints may become orphaned and YARA stops receiving events — a full VM reboot is required to restore eBPF functionality.
+- `match_debug` valid values are only `"off"` — setting `"debug"`, `"verbose"`, or `"trace"` causes rustinel to crash on startup with `enum MatchDebugLevel does not have variant constructor`
