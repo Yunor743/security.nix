@@ -169,18 +169,22 @@ services.rustinel = {
 
 ## TODO
 
+- [ ] move the fortress example in microvm.nix
 - [x] fapolicyd.nix
 - [x] rustinel.nix
 - [ ] vulnix
 - [ ] hardened kernel
 - [ ] mineral.nix
-- [ ] lkrg
+- [ ] lkrg / kspp
+- [ ] selinux
+- [ ] IMA/EVM
 - [ ] apparmor
-- [ ] falco
+- [ ] falco / tracee / cilium / kunai
 - [ ] auditd
 - [ ] antivirus
 - [ ] usbguard
 - [ ] snort / suricata
 - [ ] canaries ?
 - [ ] sandboxes ?
-
+- [ ] ptrace hardening
+- [ ] procfs hardening (hidepid)
