@@ -172,6 +172,7 @@ services.rustinel = {
 - [ ] move the fortress example in microvm.nix
 - [x] fapolicyd.nix
 - [x] rustinel.nix
+- [ ] kunai
 - [ ] vulnix
 - [ ] hardened kernel
 - [ ] mineral.nix
@@ -179,7 +180,7 @@ services.rustinel = {
 - [ ] selinux
 - [ ] IMA/EVM
 - [ ] apparmor
-- [ ] falco / tracee / cilium / kunai
+- [ ] falco / tracee / cilium
 - [ ] auditd
 - [ ] antivirus
 - [ ] usbguard
@@ -188,3 +189,15 @@ services.rustinel = {
 - [ ] sandboxes ?
 - [ ] ptrace hardening
 - [ ] procfs hardening (hidepid)
+
+## Future projects
+
+### SANDBOX : Wrap kunai-sandbox in Nix
+- https://why.kunai.rocks/blog/2024/10/02/kunai-malware-sandboxing
+- https://github.com/kunai-project/sandbox
+
+### Offensive machine
+- inspired by exegol
+
+### Checkout Sécurix
+- https://github.com/cloud-gouv/securix/
