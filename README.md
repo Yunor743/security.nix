@@ -165,6 +165,20 @@ services.rustinel = {
 | `services.rustinel.rules` | lines | `""` | Additional YARA rules |
 | `services.rustinel.sigmaRules` | lines | `""` | Additional Sigma rules |
 
+### Capabilities
+
+The rustinel service runs with the following ambient capabilities:
+
+- `CAP_BPF` — load and attach eBPF programs
+- `CAP_NET_ADMIN` — network telemetry capture
+- `CAP_SYS_RESOURCE` — raise resource limits for eBPF maps
+- `CAP_SYS_ADMIN` — required for certain eBPF operations
+- `CAP_DAC_READ_SEARCH` — bypass file read permission checks for YARA scanning
+
+`CAP_DAC_READ_SEARCH` is essential: without it, the YARA scanner cannot read files that lack "other" read permissions (e.g. `0700`, `0600`), causing silent scan failures that return "no matches" instead of an error. This capability allows the EDR to scan all files regardless of ownership and permissions, as expected from an endpoint detection agent.
+
+The service also sets `NoNewPrivileges = true` to prevent privilege escalation through setuid binaries.
+
 ---
 
 ## TODO

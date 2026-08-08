@@ -136,6 +136,20 @@ in
             min_severity = "critical";
             channel_capacity = 128;
           };
+          dedup = {
+            enabled = true;
+            window_secs = 60;
+            max_entries = 10000;
+          };
+          process = {
+            max_entries = 65536;
+          };
+          network = {
+            aggregation_enabled = true;
+            aggregation_max_entries = 20000;
+            aggregation_window_secs = 60;
+            aggregation_interval_buffer_size = 50;
+          };
           ioc = {
             enabled = true;
             hashes_path = "/etc/rustinel/rules/ioc/hashes.txt";
@@ -261,12 +275,14 @@ in
           "CAP_NET_ADMIN"
           "CAP_SYS_RESOURCE"
           "CAP_SYS_ADMIN"
+          "CAP_DAC_READ_SEARCH"
         ];
         CapabilityBoundingSet = [
           "CAP_BPF"
           "CAP_NET_ADMIN"
           "CAP_SYS_RESOURCE"
           "CAP_SYS_ADMIN"
+          "CAP_DAC_READ_SEARCH"
         ];
         NoNewPrivileges = true;
         StandardOutput = "journal";
