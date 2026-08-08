@@ -199,5 +199,9 @@ services.rustinel = {
 ### Offensive machine
 - inspired by exegol
 
-### Checkout Sécurix
+### Check Sécurix
 - https://github.com/cloud-gouv/securix/
+
+### Check ANSSI hardening guide
+- https://blog.stephane-robert.info/docs/securiser/durcissement/anssi-bp-28/
+
