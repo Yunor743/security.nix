@@ -2,12 +2,34 @@
 
 NixOS packages and modules for endpoint security and detection
 
+> **TODO / CONTRIBUTIONS WELCOME** — Elastic Defend on NixOS
+>
+> The `endpoint` component of the official elastic-agent fails to install on
+> NixOS (see `modules/elastic-agent.nix` header + the "Elastic Defend on
+> NixOS" section below):
+>
+> 1. it hardcodes `/bin/systemctl` (workaround shipped: `enableEndpointShim`)
+> 2. it writes its own privileged unit to `/etc/systemd/system/ElasticEndpoint.service`,
+>    which is read-only on NixOS → the component loops forever in
+>    `Starting: endpoint service runtime` and never activates
+>
+> Focus areas if you want to help:
+> - patch/wrap the endpoint installer so the unit lands in a writable
+>   location (or find the upstream setting that overrides the unit path)
+> - investigate a systemd unit shim/overlay approach that survives NixOS
+>   declarative unit management
+> - alternatively evaluate lightweight-NixOS-friendly alternatives
+>   (e.g. rustinel, also in this flake) for detection on NixOS hosts
+> - upstream refs: elastic/elastic-agent issues on NixOS support
+
+
 ## Packages
 
 | Package | Description |
 |---------|-------------|
 | `fapolicyd` | File access policy daemon for application whitelisting |
 | `rustinel` | Open-source EDR using eBPF, Sigma, YARA, and IOC detection |
+| `elastic-agent` | Official Elastic Agent (log/metrics shipper, Elastic Defend runtime) |
 | `yara-forge-rules` | Curated YARA rule sets from YARA Forge |
 | `sigma-rules` | SigmaHQ detection rules (complete set) |
 
@@ -17,6 +39,7 @@ NixOS packages and modules for endpoint security and detection
 |--------|-------------|
 | `services.fapolicyd` | File access policy daemon with profiles for NixOS |
 | `services.rustinel` | eBPF-based endpoint detection with Sigma, YARA, and IOC |
+| `services.elastic-agent` | Official Elastic Agent — standalone (direct Elasticsearch) or Fleet-managed |
 
 ## Quick Start
 
@@ -155,6 +178,96 @@ services.rustinel = {
 };
 ```
 
+### elastic-agent
+
+Official Elastic Agent, supporting two roles:
+
+- `standalone` — locally configured (declarative `policy`), writes directly to
+  Elasticsearch. Requires an ES user with write privileges on the target
+  data streams (e.g. `logs-*`, `metrics-*`).
+- `fleet-agent` — enrolled in a [Fleet Server](https://www.elastic.co/docs/reference/fleet/fleet-server);
+  the agent policy is then managed from the Kibana Fleet UI (required for
+  integrations such as Elastic Defend).
+
+```nix
+{
+  imports = [ security-nix.nixosModules.elastic-agent ];
+  nixpkgs.overlays = [ security-nix.overlays.default ];
+
+  services.elastic-agent = {
+    enable = true;
+    role = "standalone"; # or "fleet-agent"
+    serverUrl = "https://siem.example.com:9243";
+    username = "elastic_agent";
+    passwordFile = "/run/agenix/elastic-agent-es-password";
+    policy = ''
+      - type: system/metrics
+        id: system-metrics-default
+        data_stream.namespace: default
+        use_output: default
+        streams:
+          - metricsets: [cpu, memory, network, filesystem]
+            data_stream.dataset: system.cpu
+    '';
+  };
+}
+```
+
+Fleet-managed variant:
+
+```nix
+services.elastic-agent = {
+  enable = true;
+  role = "fleet-agent";
+  fleet = {
+    url = "https://fleet.example.com:8220";
+    enrollmentTokenFile = "/run/agenix/fleet-enrollment-token";
+    # Optional: pin the CA to verify the Fleet Server certificate. By
+    # default the system trust store is used.
+    certificateAuthorities = [ "/etc/ssl/certs/internal-ca.crt" ];
+    tags = [ "workstation" ];
+  };
+};
+```
+
+Notes:
+- The agent runs from a symlink tree in the writable `stateDir`
+  (`/var/lib/elastic-agent`): the immutable package stays in the Nix store,
+  state (enrollment, data, logs) lands in the state dir. `STATE_PATH` is set
+  accordingly.
+- The package is the official binary with its ELF interpreter patched for
+  NixOS (the upstream tarball ships a generic glibc interpreter path).
+- **Elastic Defend licensing**: the detection engine and malware prevention
+  are included in the free Basic license, but Defend requires a Fleet-managed
+  agent. Advanced features (ransomware prevention, host isolation, tamper
+  protection…) require Enterprise.
+
+#### Elastic Defend on NixOS — known limitation
+
+The module is **self-sufficient** for both roles: it handles the package
+(overlay), the writable state-dir tree, idempotent enrollment, KEY=VALUE
+secret extraction, and the `/bin/systemctl` shim (`enableEndpointShim`,
+default `true`). No other host modification is required.
+
+However, **Elastic Defend's endpoint runtime does NOT activate on NixOS**.
+The endpoint installer writes its own privileged unit to
+`/etc/systemd/system/ElasticEndpoint.service` — a read-only directory on
+NixOS (units are declarative). The install fails and the `endpoint`
+component stays stuck in `Starting: endpoint service runtime`. There is no
+upstream override for the unit path (verified against 9.5.x).
+
+Practical consequence:
+- ✅ works out of the box: metrics + logs via standalone or Fleet
+- ❌ Elastic Defend on a NixOS host (agent stays HEALTHY; only the endpoint
+  component never finishes installing)
+- ✔ to get Defend detection, enroll a **non-NixOS host** (VM or container
+  with a standard distro) into the same Fleet Server — the Fleet Server
+  itself can run anywhere (it is stateless w.r.t. agents)
+
+Enterprise-licensed Defend features (ransomware prevention, host isolation,
+tamper protection, response console) additionally require an Enterprise
+subscription regardless of the OS.
+
 ### Rustinel Options
 
 | Option | Type | Default | Description |
@@ -186,6 +299,7 @@ The service also sets `NoNewPrivileges = true` to prevent privilege escalation t
 - [ ] move the fortress example in microvm.nix
 - [x] fapolicyd.nix
 - [x] rustinel.nix
+- [x] elastic-agent
 - [ ] kunai
 - [ ] vulnix
 - [ ] hardened kernel
