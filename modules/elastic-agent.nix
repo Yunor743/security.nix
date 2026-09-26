@@ -33,12 +33,24 @@ let
   #       units), so the install fails and the endpoint component stays
   #       stuck in "Starting: endpoint service runtime" forever.
   #
-  # 3. There is no override for the unit path upstream. Consequence: on a
-  #    NixOS host, Elastic Defend does NOT activate with this module. The
-  #    agent stays HEALTHY and fully usable for metrics/logs via Fleet —
-  #    only the endpoint component never finishes installing. To get
-  #    Defend, run the agent on a non-NixOS host (VM/container with a
-  #    standard distro) pointed at the same Fleet Server.
+  # 3. Fix (the third assumption that upstream code makes): the endpoint
+  #    installer writes the unit file ITSELF with a direct openat() to
+  #    /etc/systemd/system/ElasticEndpoint.service (O_WRONLY|O_CREAT, 0600).
+  #    On NixOS that path is a symlink into the read-only store, so the
+  #    write fails with EACCES and the installer rolls back (exit 79) and
+  #    the component loops forever in "Starting: endpoint service runtime".
+  #    Note: systemctl writes (daemon-reload, enable) go through PID 1 and
+  #    do NOT need a writable directory — only this direct openat does.
+  #    Workaround: an activation script converts /etc/systemd/system from
+  #    the NixOS symlink into a real, writable directory (0755) whose
+  #    content is re-synced from /etc/static/systemd/system at every
+  #    activation. Foreign files written by the endpoint installer are
+  #    preserved. See `mutableUnitsDir` and the header of that snippet.
+  #
+  # 4. There is no override for the unit path upstream. Consequence: with
+  #    the workarounds above, Elastic Defend DOES activate on NixOS (the
+  #    agent installs the service itself and systemd manages it like any
+  #    foreign unit). The agent stays HEALTHY for metrics/logs via Fleet.
   #
   # Everything else (stateDir tree, vault/proc-self-exe workaround,
   # token parsing) is handled by this module.
@@ -56,20 +68,19 @@ let
       );
     in
     ''
-      outputs:
-        default:
-          type: elasticsearch
-          hosts: ['${cfg.serverUrl}']
-          username: ${cfg.username}
-          password: "__ELASTIC_AGENT_PASSWORD__"
-          preset: ${cfg.preset}
+        outputs:
+          default:
+            type: elasticsearch
+            hosts: ['${cfg.serverUrl}']
+            username: ${cfg.username}
+            password: "__ELASTIC_AGENT_PASSWORD__"
+            preset: ${cfg.preset}
 
-      inputs:
-    ${indentedPolicy}
+        inputs:
+      ${indentedPolicy}
     '';
 
-  configText =
-    if cfg.role == "standalone" then standaloneConfig else "";
+  configText = if cfg.role == "standalone" then standaloneConfig else "";
 
   # Where the agent keeps its mutable state (enrollment, data, logs).
   stateDir = cfg.stateDir;
@@ -123,8 +134,27 @@ in
         Install a /bin/systemctl symlink to the real systemctl. Required by
         the Elastic Defend endpoint installer, which hardcodes /bin/systemctl
         (absent on NixOS). Harmless on hosts that don't use /bin/systemctl
-        otherwise. Note: even with the shim, Defend does NOT activate on
-        NixOS — see the module header comment.
+        otherwise.
+      '';
+    };
+
+    mutableUnitsDir = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Make /etc/systemd/system a real, writable directory (0755) instead of
+        the read-only NixOS symlink into the store.
+
+        Required for Elastic Defend: the endpoint installer writes its own
+        unit (/etc/systemd/system/ElasticEndpoint.service) with a direct
+        openat() — which fails with EACCES through the read-only symlink.
+        The declarative units are re-synced from /etc/static/systemd/system
+        at every activation; files not managed by NixOS (e.g. the endpoint
+        unit) are preserved.
+
+        Set to false if you do not want /etc/systemd/system to become
+        mutable on this host (Defend will not activate, metrics/logs still
+        work).
       '';
     };
 
@@ -258,7 +288,8 @@ in
         message = "services.elastic-agent: standalone role requires passwordFile.";
       }
       {
-        assertion = cfg.role != "fleet-agent" || (cfg.fleet.url != null && cfg.fleet.enrollmentTokenFile != null);
+        assertion =
+          cfg.role != "fleet-agent" || (cfg.fleet.url != null && cfg.fleet.enrollmentTokenFile != null);
         message = "services.elastic-agent: fleet-agent role requires fleet.url and fleet.enrollmentTokenFile.";
       }
     ];
@@ -286,6 +317,45 @@ in
     systemd.tmpfiles.rules = lib.mkIf cfg.enableEndpointShim [
       "L+ /bin/systemctl - - - - /run/current-system/sw/bin/systemctl"
     ];
+
+    # Elastic Defend's endpoint installer writes its unit file itself with a
+    # direct openat() to /etc/systemd/system/ElasticEndpoint.service. On NixOS
+    # that directory is a symlink into the read-only store (and even the
+    # resolved store directory is mode 0555), so the open fails with EACCES
+    # and the installer rolls back — the endpoint component then loops
+    # forever in "Starting: endpoint service runtime".
+    #
+    # This activation snippet (runs after the `etc` snippet, which recreates
+    # the symlink on every activation) converts the symlink into a real
+    # writable directory and re-syncs the declarative units into it.
+    # Foreign files (ElasticEndpoint.service, its wants symlink, ...) are
+    # preserved. Without CAP_DAC_OVERRIDE the agent can still write here
+    # because the directory is 0755 and the agent runs as root (uid 0 owns
+    # it); the whole flow was verified empirically on NixOS 26.11.
+    system.activationScripts.elasticAgentUnitsDir = lib.mkIf cfg.mutableUnitsDir (
+      lib.stringAfter [ "etc" ] ''
+        # Elastic Defend (services.elastic-agent): make /etc/systemd/system
+        # writable. setup-etc.pl has just failed to (re)create its symlink
+        # (rename(2) onto a directory fails with EISDIR) — a harmless
+        # warning — so this runs after `etc` unconditionally.
+        if [ -L /etc/systemd/system ]; then
+          rm /etc/systemd/system
+          mkdir -p /etc/systemd/system
+        fi
+        if [ -d /etc/systemd/system ]; then
+          # Re-sync declarative units (dereference only the top level:
+          # unit symlinks must stay symlinks pointing into /nix/store).
+          cp -a /etc/static/systemd/system/. /etc/systemd/system/ || true
+          # cp -a inherits the store dir mode (0555); restore owner-writable.
+          chmod 0755 /etc/systemd/system
+        else
+          mkdir -p /etc/systemd/system
+          chmod 0755 /etc/systemd/system
+          cp -a /etc/static/systemd/system/. /etc/systemd/system/ || true
+          chmod 0755 /etc/systemd/system
+        fi
+      ''
+    );
 
     systemd.services.elastic-agent = {
       description = "Elastic Agent";
@@ -344,11 +414,15 @@ in
             --url=${cfg.fleet.url} \
             --enrollment-token="$token" \
             --force \
-            ${lib.optionalString (cfg.fleet.certificateAuthorities != [ ])
-              "--certificate-authorities=${lib.concatStringsSep "," cfg.fleet.certificateAuthorities}"} \
+            ${
+              lib.optionalString (
+                cfg.fleet.certificateAuthorities != [ ]
+              ) "--certificate-authorities=${lib.concatStringsSep "," cfg.fleet.certificateAuthorities}"
+            } \
             ${lib.optionalString cfg.fleet.insecure "--insecure"} \
-            ${lib.optionalString (cfg.fleet.tags != [ ])
-              "--tag=${lib.concatStringsSep "," cfg.fleet.tags}"} \
+            ${
+              lib.optionalString (cfg.fleet.tags != [ ]) "--tag=${lib.concatStringsSep "," cfg.fleet.tags}"
+            } \
             --path.home "$home" \
             --path.logs ${stateDir}/logs \
             2>&1 | grep -v "already enrolled" || \
@@ -363,16 +437,15 @@ in
         }";
         WorkingDirectory = stateDir;
         StateDirectory = builtins.baseNameOf stateDir;
-        Environment =
-          [
-            "STATE_PATH=${stateDir}"
-            # Keep the agent away from its read-only store home: logs and
-            # runtime data must land in the state dir (journald captures
-            # stdout/stderr anyway).
-            "HOME=${stateDir}"
-            "PATH=/run/current-system/sw/bin"
-          ]
-          ++ lib.mapAttrsToList (n: v: "${n}=${v}") cfg.extraEnv;
+        Environment = [
+          "STATE_PATH=${stateDir}"
+          # Keep the agent away from its read-only store home: logs and
+          # runtime data must land in the state dir (journald captures
+          # stdout/stderr anyway).
+          "HOME=${stateDir}"
+          "PATH=/run/current-system/sw/bin"
+        ]
+        ++ lib.mapAttrsToList (n: v: "${n}=${v}") cfg.extraEnv;
         EnvironmentFile = lib.mkIf (cfg.passwordFile != null) cfg.passwordFile;
         Restart = "always";
         RestartSec = 5;

@@ -2,25 +2,26 @@
 
 NixOS packages and modules for endpoint security and detection
 
-> **TODO / CONTRIBUTIONS WELCOME** — Elastic Defend on NixOS
+> **SOLVED** — Elastic Defend on NixOS
 >
-> The `endpoint` component of the official elastic-agent fails to install on
-> NixOS (see `modules/elastic-agent.nix` header + the "Elastic Defend on
-> NixOS" section below):
+> The `endpoint` component of the official elastic-agent now installs and
+> runs on NixOS (verified against 9.5.4 on NixOS 26.11). The module ships
+> the two required workarounds (both on by default):
 >
-> 1. it hardcodes `/bin/systemctl` (workaround shipped: `enableEndpointShim`)
-> 2. it writes its own privileged unit to `/etc/systemd/system/ElasticEndpoint.service`,
->    which is read-only on NixOS → the component loops forever in
->    `Starting: endpoint service runtime` and never activates
+> 1. `/bin/systemctl` shim (`enableEndpointShim`) — the endpoint installer
+>    hardcodes `/bin/systemctl`, which does not exist on NixOS.
+> 2. writable `/etc/systemd/system` (`mutableUnitsDir`) — the endpoint
+>    installer writes its own unit file with a direct `openat()` to
+>    `/etc/systemd/system/ElasticEndpoint.service`; through the NixOS
+>    read-only symlink that open fails with EACCES and the installer rolls
+>    back (exit 79). An activation script converts the symlink into a real
+>    0755 directory, re-synced from the declarative units at every
+>    activation (foreign files are preserved). See
+>    `modules/elastic-agent.nix` for details.
 >
-> Focus areas if you want to help:
-> - patch/wrap the endpoint installer so the unit lands in a writable
->   location (or find the upstream setting that overrides the unit path)
-> - investigate a systemd unit shim/overlay approach that survives NixOS
->   declarative unit management
-> - alternatively evaluate lightweight-NixOS-friendly alternatives
->   (e.g. rustinel, also in this flake) for detection on NixOS hosts
-> - upstream refs: elastic/elastic-agent issues on NixOS support
+> Note: systemctl-side writes (`daemon-reload`, `enable`, `start`) go
+> through PID 1 and never needed a writable directory — only the direct
+> `openat()` does. See the "Elastic Defend on NixOS" section below.
 
 
 ## Packages
@@ -237,36 +238,63 @@ Notes:
   accordingly.
 - The package is the official binary with its ELF interpreter patched for
   NixOS (the upstream tarball ships a generic glibc interpreter path).
+- `enableEndpointShim` (default `true`): creates `/bin/systemctl` for the
+  Elastic Defend endpoint installer (which hardcodes it).
+- `mutableUnitsDir` (default `true`): makes `/etc/systemd/system` a real
+  writable directory so the Elastic Defend endpoint installer can write its
+  unit — required for Defend; see "Elastic Defend on NixOS — solved".
 - **Elastic Defend licensing**: the detection engine and malware prevention
   are included in the free Basic license, but Defend requires a Fleet-managed
   agent. Advanced features (ransomware prevention, host isolation, tamper
   protection…) require Enterprise.
 
-#### Elastic Defend on NixOS — known limitation
+#### Elastic Defend on NixOS — solved
 
 The module is **self-sufficient** for both roles: it handles the package
 (overlay), the writable state-dir tree, idempotent enrollment, KEY=VALUE
-secret extraction, and the `/bin/systemctl` shim (`enableEndpointShim`,
-default `true`). No other host modification is required.
+secret extraction, and the two endpoint workarounds below. No other host
+modification is required.
 
-However, **Elastic Defend's endpoint runtime does NOT activate on NixOS**.
-The endpoint installer writes its own privileged unit to
-`/etc/systemd/system/ElasticEndpoint.service` — a read-only directory on
-NixOS (units are declarative). The install fails and the `endpoint`
-component stays stuck in `Starting: endpoint service runtime`. There is no
-upstream override for the unit path (verified against 9.5.x).
+Elastic Defend's endpoint runtime **does activate on NixOS** with this
+module (verified against agent 9.5.4 on NixOS 26.11). Two NixOS-specific
+assumptions needed workarounds:
 
-Practical consequence:
-- ✅ works out of the box: metrics + logs via standalone or Fleet
-- ❌ Elastic Defend on a NixOS host (agent stays HEALTHY; only the endpoint
-  component never finishes installing)
-- ✔ to get Defend detection, enroll a **non-NixOS host** (VM or container
-  with a standard distro) into the same Fleet Server — the Fleet Server
-  itself can run anywhere (it is stateless w.r.t. agents)
+1. `/bin/systemctl` does not exist on NixOS. The endpoint installer invokes
+   it literally (`systemctl list-unit-files`, `daemon-reload`, `enable`,
+   `start`). Workaround: `enableEndpointShim` installs a tmpfiles symlink
+   `/bin/systemctl` → `/run/current-system/sw/bin/systemctl`.
 
-Enterprise-licensed Defend features (ransomware prevention, host isolation,
-tamper protection, response console) additionally require an Enterprise
-subscription regardless of the OS.
+2. The endpoint installer writes its own unit file **directly** with
+   `openat("/etc/systemd/system/ElasticEndpoint.service", O_WRONLY|O_CREAT)`
+   — not via systemctl. On NixOS that path is a symlink into the read-only
+   store, so the open fails with `EACCES` and the installer rolls back the
+   whole install (exit status 79); the `endpoint` component then loops
+   forever in `Starting: endpoint service runtime`. There is no upstream
+   override for the unit path (verified against 9.5.x).
+   Workaround: `mutableUnitsDir` (default `true`) installs an activation
+   script that converts `/etc/systemd/system` into a real, owner-writable
+   directory (0755) and re-syncs the declarative units from
+   `/etc/static/systemd/system` at every activation. Foreign files written
+   at runtime (the endpoint unit, its enable symlink) are preserved, and
+   the state survives reboots (no impermanence on /etc).
+
+   Side notes from the debugging session:
+   - `systemctl enable` works on read-only directories because it is
+     executed by PID 1 (over D-Bus), which has full capabilities — only
+     the installer's direct `openat()` needs the writable directory.
+   - The agent runs with a restricted capability bounding set
+     (`NoNewPrivileges`), so a directory owned by root but mode 0555 (as a
+     `cp -a` from the store produces) is still not writable: the sync
+     `chmod 0755`s the top-level directory.
+
+Licensing reminder: Defend CORE (detection engine, malware prevention) is
+free on the Basic license but requires a Fleet-managed agent (role
+`fleet-agent`). Advanced features (ransomware prevention, host isolation,
+tamper protection, response console) require Enterprise regardless of the
+OS. The endpoint writes its telemetry directly to Elasticsearch — make
+sure your firewall allows the agent host to reach the ES HTTPS endpoint
+(e.g. `:9243`), otherwise the component reports `DEGRADED: Unable to
+connect to output server` while the runtime itself stays healthy.
 
 ### Rustinel Options
 
