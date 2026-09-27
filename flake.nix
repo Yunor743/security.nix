@@ -24,18 +24,17 @@
           };
         in
         {
-        packages.fapolicyd = pkgs.callPackage ./packages/fapolicyd { };
-        packages.rustinel = pkgs.callPackage ./packages/rustinel { };
-        packages.elastic-agent = pkgs.callPackage ./packages/elastic-agent { };
-        packages.yara-forge-rules = pkgs.callPackage ./packages/yara-forge-rules { };
-        packages.sigma-rules = pkgs.callPackage ./packages/sigma-rules { };
+          packages.fapolicyd = pkgs.callPackage ./packages/fapolicyd { };
+          packages.rustinel = pkgs.callPackage ./packages/rustinel { };
+          packages.elastic-agent = pkgs.callPackage ./packages/elastic-agent { };
+          packages.yara-forge-rules = pkgs.callPackage ./packages/yara-forge-rules { };
+          packages.sigma-rules = pkgs.callPackage ./packages/sigma-rules { };
 
           checks =
             let
               tests = pkgs.callPackage ./checks/nixos-test.nix { self = self; };
               agentTest = {
-                elastic-agent-standalone =
-                  pkgs.callPackage ./checks/elastic-agent-test.nix { inherit self; };
+                elastic-agent-standalone = pkgs.callPackage ./checks/elastic-agent-test.nix { inherit self; };
               };
             in
             builtins.removeAttrs (tests // agentTest) [

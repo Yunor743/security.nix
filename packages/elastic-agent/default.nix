@@ -25,7 +25,9 @@ stdenv.mkDerivation {
   inherit version;
 
   src = fetchurl {
-    url = "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${version}-linux-${archMap.${stdenv.hostPlatform.system}}.tar.gz";
+    url = "https://artifacts.elastic.co/downloads/beats/elastic-agent/elastic-agent-${version}-linux-${
+      archMap.${stdenv.hostPlatform.system}
+    }.tar.gz";
     hash = hashes.${stdenv.hostPlatform.system};
   };
 

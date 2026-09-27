@@ -144,11 +144,8 @@ in
           process = {
             max_entries = 65536;
           };
-          network = {
-            aggregation_enabled = true;
-            aggregation_max_entries = 20000;
-            aggregation_window_secs = 60;
-            aggregation_interval_buffer_size = 50;
+          capture = {
+            directory = "/var/lib/rustinel/captures";
           };
           ioc = {
             enabled = true;

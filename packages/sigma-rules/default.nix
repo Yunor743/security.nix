@@ -7,11 +7,11 @@
 
 stdenv.mkDerivation {
   pname = "sigma-rules";
-  version = "2026-04-01";
+  version = "2026-07-01";
 
   src = fetchurl {
-    url = "https://github.com/SigmaHQ/sigma/releases/download/r2026-04-01/sigma_all_rules.zip";
-    hash = "sha256-10iEIEd9ZULvu6IrkBu7c7arjpXOQR35LZXCfcXXN8I=";
+    url = "https://github.com/SigmaHQ/sigma/releases/download/r2026-07-01/sigma_all_rules.zip";
+    hash = "sha256-VyXJG1gTWHrWpLC44CM/pENIsVlfgY2Lf9OdYDM4UIU=";
   };
 
   sourceRoot = ".";

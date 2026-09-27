@@ -7,11 +7,11 @@
 
 stdenv.mkDerivation {
   pname = "yara-forge-rules";
-  version = "2026-03-29";
+  version = "2026-09-20";
 
   src = fetchurl {
-    url = "https://github.com/YARAHQ/yara-forge/releases/download/20260329/yara-forge-rules-full.zip";
-    hash = "sha256-z7NMbv8B5YkSAg10iGiS1MNqtayVkJrtzD/SVQRZrNc=";
+    url = "https://github.com/YARAHQ/yara-forge/releases/download/20260920/yara-forge-rules-full.zip";
+    hash = "sha256-JGcxElKKqT4T1TdTEnMswhE79O/bjNhfM6rq662jWVE=";
   };
 
   nativeBuildInputs = [ unzip ];
