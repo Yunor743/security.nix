@@ -27,6 +27,7 @@
           packages.fapolicyd = pkgs.callPackage ./packages/fapolicyd { };
           packages.rustinel = pkgs.callPackage ./packages/rustinel { };
           packages.elastic-agent = pkgs.callPackage ./packages/elastic-agent { };
+          packages.jit-hater = pkgs.callPackage ./packages/jit-hater { };
           packages.yara-forge-rules = pkgs.callPackage ./packages/yara-forge-rules { };
           packages.sigma-rules = pkgs.callPackage ./packages/sigma-rules { };
 
@@ -50,6 +51,7 @@
         fapolicyd = prev.callPackage ./packages/fapolicyd { };
         rustinel = prev.callPackage ./packages/rustinel { };
         elastic-agent = prev.callPackage ./packages/elastic-agent { };
+        jit-hater = prev.callPackage ./packages/jit-hater { };
         yara-forge-rules = prev.callPackage ./packages/yara-forge-rules { };
         sigma-rules = prev.callPackage ./packages/sigma-rules { };
       };
@@ -58,6 +60,7 @@
         fapolicyd = import ./modules/fapolicyd.nix;
         rustinel = import ./modules/rustinel.nix;
         elastic-agent = import ./modules/elastic-agent.nix;
+        jit-hater = import ./modules/jit-hater.nix;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
       };
