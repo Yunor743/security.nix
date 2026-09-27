@@ -31,6 +31,7 @@ NixOS packages and modules for endpoint security and detection
 | `fapolicyd` | File access policy daemon for application whitelisting |
 | `rustinel` | Open-source EDR using eBPF, Sigma, YARA, and IOC detection |
 | `elastic-agent` | Official Elastic Agent (log/metrics shipper, Elastic Defend runtime) |
+| `jit-hater` | Behavioral memory threat detector (RWX/mprotect/fluctuation dumps) |
 | `yara-forge-rules` | Curated YARA rule sets from YARA Forge |
 | `sigma-rules` | SigmaHQ detection rules (complete set) |
 
@@ -41,6 +42,7 @@ NixOS packages and modules for endpoint security and detection
 | `services.fapolicyd` | File access policy daemon with profiles for NixOS |
 | `services.rustinel` | eBPF-based endpoint detection with Sigma, YARA, and IOC |
 | `services.elastic-agent` | Official Elastic Agent — standalone (direct Elasticsearch) or Fleet-managed |
+| `services.jit-hater` | Behavioral memory-threat detector — dumps suspicious memory pages for offline scanning |
 
 ## Quick Start
 
@@ -296,6 +298,64 @@ sure your firewall allows the agent host to reach the ES HTTPS endpoint
 (e.g. `:9243`), otherwise the component reports `DEGRADED: Unable to
 connect to output server` while the runtime itself stays healthy.
 
+### jit-hater
+
+[JIT-Hater](https://github.com/Yunor743/JIT-Hater) is a behavioral
+memory-threat detector for Linux: it watches every process's memory
+activity (`mmap(RWX)`, `mprotect(RW→RX)`, exec/non-exec page flipping,
+executable memfd, ptrace pokes, writes to `/proc/*/mem`…) and **dumps the
+suspicious page to disk** with a JSON sidecar explaining why. It does not
+scan anything itself — feed the dumps to YARA/your AV/your EDR. Think of
+it as the open-source Linux equivalent of the detection half of
+pe-sieve / Moneta.
+
+```nix
+{
+  imports = [ security-nix.nixosModules.jit-hater ];
+  nixpkgs.overlays = [ security-nix.overlays.default ];
+
+  services.jit-hater = {
+    enable = true;
+    settings = {
+      "dump.directory" = "/dev/shm/jit-hater";
+      "monitor.fluctuation_threshold" = 5;
+      "scanner.interval_secs" = 300;
+      # JIT engines legitimately cycle RW→RX — allowlist them or expect FPs
+      "rules.jit_allowlist" = [ "neovim" "gnome-shell" ];
+    };
+  };
+}
+```
+
+One-shot usage for threat hunting / DFIR:
+
+```bash
+sudo jit-hater scan --pid 1234   # targeted
+sudo jit-hater scan --dry-run    # report only, no dumps
+jit-hater rules                  # list every rule slug and its state
+```
+
+Notes:
+- The service runs as root with a hardened unit (`CAP_SYS_PTRACE`,
+  `CAP_BPF`, `CAP_PERFMON`, `CAP_DAC_READ_SEARCH`, `ProtectSystem=strict`).
+- Dumps land in a root-only tmpfs directory (mode 0700) and are wiped on
+  reboot — dumps can contain secrets held by legitimate processes
+  (browsers, keyrings…).
+- The fluctuation rule needs tuning (JIT allowlist) on desktop systems;
+  expect false positives without it.
+- Polling mode observes transitions at `monitor.poll_interval_secs`
+  granularity — the eBPF LSM path is the upstream roadmap for exact
+  telemetry.
+
+#### jit-hater Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `services.jit-hater.enable` | bool | `false` | Enable the monitor service |
+| `services.jit-hater.package` | package | `pkgs.jit-hater` | Package to use |
+| `services.jit-hater.settings` | YAML attrs | sensible defaults | Config rendered to `/etc`-style generated YAML |
+| `services.jit-hater.extraArgs` | listOf str | `[]` | Extra CLI args passed to `jit-hater monitor` |
+
 ### Rustinel Options
 
 | Option | Type | Default | Description |
@@ -328,6 +388,7 @@ The service also sets `NoNewPrivileges = true` to prevent privilege escalation t
 - [x] fapolicyd.nix
 - [x] rustinel.nix
 - [x] elastic-agent
+- [x] jit-hater
 - [ ] kunai
 - [ ] vulnix
 - [ ] hardened kernel
