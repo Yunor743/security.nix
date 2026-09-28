@@ -26,9 +26,13 @@
 ├── modules/
 │   ├── fapolicyd.nix          # NixOS module: services.fapolicyd options & config
 │   ├── rustinel.nix           # NixOS module: services.rustinel options & config
-│   └── security.nix           # Aggregation module: imports both fapolicyd and rustinel
+│   ├── elastic-agent.nix      # NixOS module: services.elastic-agent options & config
+│   ├── jit-hater.nix          # NixOS module: services.jit-hater options & config
+│   └── security.nix           # Aggregation module: imports all of the above
 ├── checks/
-│   └── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
+│   ├── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
+│   ├── elastic-agent-test.nix # VM integration test (standalone agent wiring)
+│   └── jit-hater-test.nix     # VM integration test (service stays active, nested config accepted)
 ├── example/
 │   ├── flake.nix              # Standalone example flake (from-local / from-github sources)
 │   ├── fortress.nix           # Example NixOS host config (fapolicyd + rustinel + disko + impermanence)
@@ -45,6 +49,7 @@
 - **YARA Forge rules** — Curated YARA rule sets. The rustinel module strips `console.log` calls from YARA rules (JavaScript `console` is not available in YARA's native engine).
 - **SigmaHQ rules** — Complete Sigma detection rules for use with rustinel.
 - **elastic-agent** — Official Elastic Agent (standalone or Fleet-managed). The package is the upstream tarball with the ELF interpreter patched for NixOS. The module materialises a writable copy of the package tree under `stateDir` (the binary resolves its vault relative to `/proc/self/exe`, which would target the read-only store otherwise). For Elastic Defend, two NixOS workarounds are required and shipped: `enableEndpointShim` (`/bin/systemctl` symlink — the endpoint installer hardcodes it) and `mutableUnitsDir` (converts `/etc/systemd/system` from the NixOS store symlink into a real 0755 directory, re-synced from `/etc/static/systemd/system` at every activation, preserving foreign files). Verified empirically on 9.5.4: the endpoint installer writes its unit with a direct `openat()` (fails EACCES through the store symlink → rollback exit 79 → infinite `Starting: endpoint service runtime` loop), while `systemctl enable/start` go through PID 1 and never need a writable directory. Beware: `cp -a` from the store dir copies its 0555 mode — the activation script `chmod 0755`s the top-level directory (the agent has `NoNewPrivileges` and no `CAP_DAC_OVERRIDE`, so an owner-unwritable dir blocks it). Never dereference the sync (`cp -aL`): the `.wants/` entries MUST remain symlinks — systemd ignores regular files in wants dirs, which silently kills udevd/networkd at boot.
+- **jit-hater** — Behavioral memory-threat detector (dumps suspicious pages for offline YARA/AV scanning). The binary parses its YAML config with serde `deny_unknown_fields` and expects a **nested** schema (top-level sections `dump`/`monitor`/`scanner`/`rules`/`log`) — the module's `settings` options are declared as nested suboptions so the generated YAML matches; flat dotted keys (`dump.directory:`) make the service crash-loop with `unknown field` (this was the initial module bug, caught by the VM test). `settings` is a freeform YAML type: extra upstream keys pass through. `services.jit-hater.configFile` (read-only) exposes the generated file for debugging/manual runs. On JIT-dense desktops, `rwx_region`, `unbacked_rx` and the `mprotect_*`/`mmap_*` eBPF rules fire on every JIT compilation (browsers, bun, node, NixOS wrapped binaries — whose comm is `.name-wrapped`, not the package name) — disable them via `settings.rules.disabled` and keep the behavioral rules (`fluctuation`, `memfd_exec`, `ptrace_*`, `deleted_file_exec`); tune `rules.jit_allowlist` (fluctuation) and `rules.process_allowlist` (full ignore, comm prefix).
 
 ## Build & Development Commands
 
@@ -97,9 +102,9 @@ nix build example#nixosConfigurations.from-local.config.system.build.vm
 
 ## Testing
 
-- Tests are NixOS VM tests in `checks/nixos-test.nix`
-- Three test variants: `permissive` (nixos profile, permissive mode), `enforcing-nixos` (nixos profile, enforcing mode), `known-libs` (known-libs profile, permissive mode)
-- Tests verify: daemon is active, `fapolicyd-cli --list` works, config files exist in `/etc`, user/group exist
+- Tests are NixOS VM tests in `checks/` (fapolicyd ×3 profiles, elastic-agent standalone, jit-hater)
+- fapolicyd tests verify: daemon is active, `fapolicyd-cli --list` works, config files exist in `/etc`, user/group exist
+- The jit-hater test asserts the service stays `active` after 15s (a config schema mismatch makes it crash-loop with `Restart=on-failure`), the binary accepts the generated config (no `unknown field` in the journal), the tmpfs dump dir is root 0700, and the `rules` CLI works
 - No automated tests for rustinel yet
 - Run all tests: `nix flake check`
 

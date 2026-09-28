@@ -37,8 +37,11 @@
               agentTest = {
                 elastic-agent-standalone = pkgs.callPackage ./checks/elastic-agent-test.nix { inherit self; };
               };
+              jitHaterTest = {
+                jit-hater = pkgs.callPackage ./checks/jit-hater-test.nix { inherit self; };
+              };
             in
-            builtins.removeAttrs (tests // agentTest) [
+            builtins.removeAttrs (tests // agentTest // jitHaterTest) [
               "overrideDerivation"
               "override"
             ];

@@ -317,15 +317,33 @@ pe-sieve / Moneta.
   services.jit-hater = {
     enable = true;
     settings = {
-      "dump.directory" = "/dev/shm/jit-hater";
-      "monitor.fluctuation_threshold" = 5;
-      "scanner.interval_secs" = 300;
-      # JIT engines legitimately cycle RW→RX — allowlist them or expect FPs
-      "rules.jit_allowlist" = [ "neovim" "gnome-shell" ];
+      dump = {
+        directory = "/dev/shm/jit-hater";
+        granularity = "page";
+      };
+      monitor = {
+        prefer_ebpf = true;
+        fluctuation_threshold = 5;
+      };
+      scanner.interval_secs = 300;
+      # JIT engines legitimately cycle RW→RX — allowlist them or expect FPs.
+      # On NixOS, wrapped binaries have a `.name-wrapped` comm, not the
+      # package name — allowlist both when needed.
+      rules.jit_allowlist = [ "neovim" "gnome-shell" ];
+      log = {
+        format = "json";
+        filter = "info";
+      };
     };
   };
 }
 ```
+
+The settings are passed through to the binary's own YAML schema
+(top-level sections `dump`, `monitor`, `scanner`, `rules`, `log` — see
+`config/jit-hater.example.yaml` upstream). It is a freeform type: any
+extra key (`max_dump_size`, `ignore_processes`, `watch_uids`…) passes
+through verbatim.
 
 One-shot usage for threat hunting / DFIR:
 
@@ -343,6 +361,12 @@ Notes:
   (browsers, keyrings…).
 - The fluctuation rule needs tuning (JIT allowlist) on desktop systems;
   expect false positives without it.
+- On JIT-dense desktops, `rwx_region`, `unbacked_rx` and the `mprotect_*`
+  / `mmap_*` eBPF rules fire on every JIT compilation (browsers, bun, node,
+  NixOS wrapped binaries) — hundreds of dumps per minute. Disable them via
+  `settings.rules.disabled` and keep the behavioral rules (`fluctuation`,
+  `memfd_exec`, `ptrace_*`, `deleted_file_exec`…); `rules.process_allowlist`
+  fully ignores a process's findings (comm prefix match).
 - Polling mode observes transitions at `monitor.poll_interval_secs`
   granularity — the eBPF LSM path is the upstream roadmap for exact
   telemetry.
@@ -353,7 +377,12 @@ Notes:
 |--------|------|---------|-------------|
 | `services.jit-hater.enable` | bool | `false` | Enable the monitor service |
 | `services.jit-hater.package` | package | `pkgs.jit-hater` | Package to use |
-| `services.jit-hater.settings` | YAML attrs | sensible defaults | Config rendered to `/etc`-style generated YAML |
+| `services.jit-hater.configFile` | path (read-only) | generated | Generated YAML config (debugging, manual runs) |
+| `services.jit-hater.settings.dump.*` | — | see below | `directory` (str, `/dev/shm/jit-hater`), `granularity` (enum `page`/`vma`, `page`) |
+| `services.jit-hater.settings.monitor.*` | — | see below | `prefer_ebpf` (bool, `true`), `fluctuation_threshold` (int, `5`), `poll_interval_secs` (int, `5`) |
+| `services.jit-hater.settings.scanner.interval_secs` | int | `300` | Structural /proc scan period in service mode (0 = off) |
+| `services.jit-hater.settings.rules.*` | — | see below | `disabled` (listOf str, `[]`), `jit_allowlist` (listOf str, `[]`), `process_allowlist` (listOf str, `[]`) |
+| `services.jit-hater.settings.log.*` | — | see below | `format` (enum `json`/`human`, `json`), `filter` (str, `info`) |
 | `services.jit-hater.extraArgs` | listOf str | `[]` | Extra CLI args passed to `jit-hater monitor` |
 
 ### Rustinel Options

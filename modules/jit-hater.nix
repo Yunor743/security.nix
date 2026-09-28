@@ -7,9 +7,6 @@
 
 let
   cfg = config.services.jit-hater;
-
-  settingsFormat = pkgs.formats.yaml { };
-  configFile = settingsFormat.generate "jit-hater.yaml" cfg.settings;
 in
 {
   options.services.jit-hater = {
@@ -17,57 +14,97 @@ in
 
     package = lib.mkPackageOption pkgs "jit-hater" { };
 
+    configFile = lib.mkOption {
+      type = lib.types.path;
+      readOnly = true;
+      description = "Generated JIT-Hater configuration file (useful for debugging or manual runs).";
+    };
+
     settings = lib.mkOption {
       type = lib.types.submodule {
-        freeformType = settingsFormat.type;
+        freeformType = (pkgs.formats.yaml { }).type;
         options = {
-          "dump.directory" = lib.mkOption {
-            type = lib.types.str;
-            default = "/dev/shm/jit-hater";
-            description = ''
-              Directory where suspicious memory pages are dumped.
-              Must live on a tmpfs: dumps may contain secrets held by
-              legitimate processes (browsers, keyrings...).
-            '';
+          dump = {
+            directory = lib.mkOption {
+              type = lib.types.str;
+              default = "/dev/shm/jit-hater";
+              description = ''
+                Directory where suspicious memory pages are dumped.
+                Must live on a tmpfs: dumps may contain secrets held by
+                legitimate processes (browsers, keyrings...).
+              '';
+            };
+            granularity = lib.mkOption {
+              type = lib.types.enum [
+                "page"
+                "vma"
+              ];
+              default = "page";
+              description = "Dump the 4KiB page or the whole VMA (capped).";
+            };
           };
-          "dump.granularity" = lib.mkOption {
-            type = lib.types.enum [
-              "page"
-              "vma"
-            ];
-            default = "page";
-            description = "Dump the 4KiB page or the whole VMA (capped).";
+          monitor = {
+            prefer_ebpf = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = ''
+                Use eBPF probes when the kernel supports them (LSM hooks need
+                CONFIG_BPF_LSM and `bpf` in the lsm= boot parameter), otherwise
+                fall back to /proc polling.
+              '';
+            };
+            fluctuation_threshold = lib.mkOption {
+              type = lib.types.int;
+              default = 5;
+              description = "Executable-state transitions on one page before a fluctuation dump.";
+            };
+            poll_interval_secs = lib.mkOption {
+              type = lib.types.int;
+              default = 5;
+              description = "/proc polling interval (fallback mode).";
+            };
           };
-          "monitor.fluctuation_threshold" = lib.mkOption {
-            type = lib.types.int;
-            default = 5;
-            description = "Executable-state transitions on one page before a fluctuation dump.";
+          scanner = {
+            interval_secs = lib.mkOption {
+              type = lib.types.int;
+              default = 300;
+              description = "Structural /proc scan period in service mode (0 = off).";
+            };
           };
-          "monitor.poll_interval_secs" = lib.mkOption {
-            type = lib.types.int;
-            default = 5;
-            description = "/proc polling interval (fallback mode).";
+          rules = {
+            disabled = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Rule slugs to disable (see `jit-hater rules` for the full list).";
+            };
+            jit_allowlist = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = ''
+                Process names tolerated by the fluctuation rule. On NixOS,
+                wrapped binaries have a `.name-wrapped` comm, not the package
+                name — allowlist both when needed.
+              '';
+            };
+            process_allowlist = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = "Process name (comm) prefixes whose findings are fully ignored.";
+            };
           };
-          "scanner.interval_secs" = lib.mkOption {
-            type = lib.types.int;
-            default = 300;
-            description = "Structural /proc scan period in service mode.";
-          };
-          "rules.jit_allowlist" = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            description = "Process names tolerated by the fluctuation rule.";
-          };
-          "log.format" = lib.mkOption {
-            type = lib.types.enum [
-              "json"
-              "human"
-            ];
-            default = "json";
-          };
-          "log.filter" = lib.mkOption {
-            type = lib.types.str;
-            default = "info";
+          log = {
+            format = lib.mkOption {
+              type = lib.types.enum [
+                "json"
+                "human"
+              ];
+              default = "json";
+            };
+            filter = lib.mkOption {
+              type = lib.types.str;
+              default = "info";
+              description = "tracing filter, e.g. \"info\", \"debug\", \"jit_hater=trace\".";
+            };
           };
         };
       };
@@ -83,8 +120,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    services.jit-hater.configFile =
+      (pkgs.formats.yaml { }).generate "jit-hater.yaml" cfg.settings;
+
     systemd.tmpfiles.settings."10-jit-hater"."/dev/shm/jit-hater".d =
-      lib.mkIf (cfg.settings."dump.directory" == "/dev/shm/jit-hater")
+      lib.mkIf (cfg.settings.dump.directory == "/dev/shm/jit-hater")
         {
           user = "root";
           group = "root";
@@ -98,7 +138,7 @@ in
       wantedBy = [ "multi-user.target" ];
 
       serviceConfig = {
-        ExecStart = "${lib.getExe cfg.package} monitor --config ${configFile} ${lib.escapeShellArgs cfg.extraArgs}";
+        ExecStart = "${lib.getExe cfg.package} monitor --config ${cfg.configFile} ${lib.escapeShellArgs cfg.extraArgs}";
         Restart = "on-failure";
         RestartSec = "5s";
 
