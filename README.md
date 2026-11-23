@@ -34,6 +34,8 @@ NixOS packages and modules for endpoint security and detection
 | `jit-hater` | Behavioral memory threat detector (RWX/mprotect/fluctuation dumps) |
 | `yara-forge-rules` | Curated YARA rule sets from YARA Forge |
 | `sigma-rules` | SigmaHQ detection rules (complete set) |
+| `minisoc` | MiniSOC engine + CLI (Rust): normalize, filter, triage, optional LLM analysis |
+| `minisoc-ui` | MiniSOC desktop widget (Quickshell) |
 
 ## NixOS Modules
 
@@ -43,6 +45,9 @@ NixOS packages and modules for endpoint security and detection
 | `services.rustinel` | eBPF-based endpoint detection with Sigma, YARA, and IOC |
 | `services.elastic-agent` | Official Elastic Agent — standalone (direct Elasticsearch) or Fleet-managed |
 | `services.jit-hater` | Behavioral memory-threat detector — dumps suspicious memory pages for offline scanning |
+| `services.minisoc` | MiniSOC: Vector collector, per-user engine, alert_filter.yaml, optional AI (SOC N1) |
+
+Home Manager: `homeManagerModules.minisoc` (`programs.minisoc`, the MiniSOC widget).
 
 ## Quick Start
 
@@ -411,6 +416,29 @@ The service also sets `NoNewPrivileges = true` to prevent privilege escalation t
 
 ---
 
+## MiniSOC
+
+A personal, local SOC: Vector collects and parses the alerts of the machine
+(Rustinel by default, any log file you declare), a Rust engine running as a
+systemd user service normalizes, de-duplicates and filters them with
+`~/.config/minisoc/alert_filter.yaml` (strict validation, hot reload, last
+valid version kept), stores their lifecycle (pin / discard / restore /
+filtered / analyzed) and a Quickshell widget shows them. An LLM (Ollama,
+OpenAI, Anthropic, Gemini, OpenRouter, OpenAI-compatible, custom) can optionally add a
+SOC N1 analysis and propose discards or exclusion rules under code-enforced
+guardrails (critical never auto-discarded, critical/high never filtered by
+the AI, pinned alerts untouchable, remote providers opt-in).
+
+```nix
+services.rustinel.enable = true;
+services.minisoc = {
+  enable = true;
+  users = [ "alice" ];
+};
+```
+
+Full documentation: [docs/minisoc.md](docs/minisoc.md).
+
 ## TODO
 
 - [ ] move the fortress example in microvm.nix
@@ -418,6 +446,7 @@ The service also sets `NoNewPrivileges = true` to prevent privilege escalation t
 - [x] rustinel.nix
 - [x] elastic-agent
 - [x] jit-hater
+- [x] minisoc (local SOC: collector, filtering, triage UI, optional LLM)
 - [ ] kunai
 - [ ] vulnix
 - [ ] hardened kernel

@@ -3,10 +3,20 @@
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";
+    # Only used by the MiniSOC VM test (Home Manager module).
+    home-manager = {
+      url = "github:nix-community/home-manager";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
-    { self, nixpkgs, ... }:
+    {
+      self,
+      nixpkgs,
+      home-manager,
+      ...
+    }:
     let
       supportedSystems = [
         "x86_64-linux"
@@ -30,6 +40,10 @@
           packages.jit-hater = pkgs.callPackage ./packages/jit-hater { };
           packages.yara-forge-rules = pkgs.callPackage ./packages/yara-forge-rules { };
           packages.sigma-rules = pkgs.callPackage ./packages/sigma-rules { };
+          packages.minisoc = pkgs.callPackage ./packages/minisoc { };
+          packages.minisoc-ui = pkgs.callPackage ./packages/minisoc-ui {
+            minisoc = pkgs.callPackage ./packages/minisoc { };
+          };
 
           checks =
             let
@@ -40,8 +54,12 @@
               jitHaterTest = {
                 jit-hater = pkgs.callPackage ./checks/jit-hater-test.nix { inherit self; };
               };
+              minisocTests = {
+                minisoc-vector = pkgs.callPackage ./checks/minisoc-vector-test.nix { };
+                minisoc = pkgs.callPackage ./checks/minisoc-test.nix { inherit self home-manager; };
+              };
             in
-            builtins.removeAttrs (tests // agentTest // jitHaterTest) [
+            builtins.removeAttrs (tests // agentTest // jitHaterTest // minisocTests) [
               "overrideDerivation"
               "override"
             ];
@@ -57,6 +75,8 @@
         jit-hater = prev.callPackage ./packages/jit-hater { };
         yara-forge-rules = prev.callPackage ./packages/yara-forge-rules { };
         sigma-rules = prev.callPackage ./packages/sigma-rules { };
+        minisoc = final.callPackage ./packages/minisoc { };
+        minisoc-ui = final.callPackage ./packages/minisoc-ui { };
       };
 
       nixosModules = {
@@ -64,8 +84,14 @@
         rustinel = import ./modules/rustinel.nix;
         elastic-agent = import ./modules/elastic-agent.nix;
         jit-hater = import ./modules/jit-hater.nix;
+        minisoc = import ./modules/minisoc.nix;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
+      };
+
+      homeManagerModules = {
+        minisoc = import ./modules/minisoc-home.nix;
+        default = import ./modules/minisoc-home.nix;
       };
 
       security = import ./modules/security.nix;

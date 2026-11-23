@@ -19,6 +19,8 @@
 │   │       └── dyn-linker.patch      # Replaces m4 dynamic linker discovery with placeholder
 │   ├── rustinel/
 │   │   └── default.nix        # Binary package from GitHub releases
+│   ├── minisoc/             # MiniSOC engine + CLI (Rust crate: src/, prompts/, ui/ QML)
+│   ├── minisoc-ui/          # Quickshell widget package (QML from minisoc/ui + wrapper)
 │   ├── yara-forge-rules/
 │   │   └── default.nix        # YARA Forge curated rules (zip)
 │   └── sigma-rules/
@@ -28,11 +30,17 @@
 │   ├── rustinel.nix           # NixOS module: services.rustinel options & config
 │   ├── elastic-agent.nix      # NixOS module: services.elastic-agent options & config
 │   ├── jit-hater.nix          # NixOS module: services.jit-hater options & config
+│   ├── minisoc.nix            # NixOS module: services.minisoc (Vector collector, engine user service, AI)
+│   ├── minisoc-lib.nix        # Vector/VRL config generator shared with checks
+│   ├── minisoc-home.nix       # Home Manager module: programs.minisoc (widget, rules seed, prompts)
 │   └── security.nix           # Aggregation module: imports all of the above
 ├── checks/
 │   ├── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
 │   ├── elastic-agent-test.nix # VM integration test (standalone agent wiring)
-│   └── jit-hater-test.nix     # VM integration test (service stays active, nested config accepted)
+│   ├── jit-hater-test.nix     # VM integration test (service stays active, nested config accepted)
+│   ├── minisoc-vector-test.nix # vector validate + vector test of the generated VRL parsers
+│   └── minisoc-test.nix       # VM test: collector -> engine -> filters/lifecycle/AI guardrails -> widget, HM
+├── docs/minisoc.md           # MiniSOC documentation
 ├── example/
 │   ├── flake.nix              # Standalone example flake (from-local / from-github sources)
 │   ├── fortress.nix           # Example NixOS host config (fapolicyd + rustinel + disko + impermanence)
@@ -50,6 +58,7 @@
 - **SigmaHQ rules** — Complete Sigma detection rules for use with rustinel.
 - **elastic-agent** — Official Elastic Agent (standalone or Fleet-managed). The package is the upstream tarball with the ELF interpreter patched for NixOS. The module materialises a writable copy of the package tree under `stateDir` (the binary resolves its vault relative to `/proc/self/exe`, which would target the read-only store otherwise). For Elastic Defend, two NixOS workarounds are required and shipped: `enableEndpointShim` (`/bin/systemctl` symlink — the endpoint installer hardcodes it) and `mutableUnitsDir` (converts `/etc/systemd/system` from the NixOS store symlink into a real 0755 directory, re-synced from `/etc/static/systemd/system` at every activation, preserving foreign files). Verified empirically on 9.5.4: the endpoint installer writes its unit with a direct `openat()` (fails EACCES through the store symlink → rollback exit 79 → infinite `Starting: endpoint service runtime` loop), while `systemctl enable/start` go through PID 1 and never need a writable directory. Beware: `cp -a` from the store dir copies its 0555 mode — the activation script `chmod 0755`s the top-level directory (the agent has `NoNewPrivileges` and no `CAP_DAC_OVERRIDE`, so an owner-unwritable dir blocks it). Never dereference the sync (`cp -aL`): the `.wants/` entries MUST remain symlinks — systemd ignores regular files in wants dirs, which silently kills udevd/networkd at boot.
 - **jit-hater** — Behavioral memory-threat detector (dumps suspicious pages for offline YARA/AV scanning). The binary parses its YAML config with serde `deny_unknown_fields` and expects a **nested** schema (top-level sections `dump`/`monitor`/`scanner`/`rules`/`log`) — the module's `settings` options are declared as nested suboptions so the generated YAML matches; flat dotted keys (`dump.directory:`) make the service crash-loop with `unknown field` (this was the initial module bug, caught by the VM test). `settings` is a freeform YAML type: extra upstream keys pass through. `services.jit-hater.configFile` (read-only) exposes the generated file for debugging/manual runs. On JIT-dense desktops, `rwx_region`, `unbacked_rx` and the `mprotect_*`/`mmap_*` eBPF rules fire on every JIT compilation (browsers, bun, node, NixOS wrapped binaries — whose comm is `.name-wrapped`, not the package name) — disable them via `settings.rules.disabled` and keep the behavioral rules (`fluctuation`, `memfd_exec`, `ptrace_*`, `deleted_file_exec`); tune `rules.jit_allowlist` (fluctuation) and `rules.process_allowlist` (full ignore, comm prefix).
+- **MiniSOC** — Personal local SOC (`docs/minisoc.md`). Vector (system service `minisoc-collector`, user `minisoc-collector`, only `CAP_DAC_READ_SEARCH`, `PrivateNetwork`) parses sources with VRL into a spool (`/var/lib/minisoc-collector/spool`, group `minisoc`). The Rust engine (`minisoc engine`) is a **systemd user service** (`ConditionGroup=minisoc`, users from `services.minisoc.users`) so it can read the 0600 per-user `~/.config/minisoc/alert_filter.yaml` without root; it normalizes, de-duplicates (id = hash of source+raw line), filters, stores lifecycle in SQLite (`~/.local/state/minisoc`) and writes `$XDG_RUNTIME_DIR/minisoc/state.json` for the Quickshell widget, which only reads that file and runs `minisoc <action>`. Invariants enforced in code (keep them): pinned alerts are never hidden by rules nor touched by the AI; an invalid rules file is rejected as a whole and its last valid version stays in force; automated rule writes only append (backup + validated atomic write); AI never auto-discards critical/unknown, AI rules get an injected `severity` excluding critical/high and must stay within one similarity fingerprint; non-loopback LLM endpoints need `ai.allowRemote`. Rustinel 1.8 writes flat ECS keys and rotates `alerts.json.YYYY-MM-DD` (root 0600 in a 0700 dir). Vector interpolates `$VAR` in its config, so `$` is doubled in generated VRL. Nix `builtins.match` is POSIX ERE: no `[:...]`/`\[` constructs.
 
 ## Build & Development Commands
 
@@ -59,6 +68,9 @@ nix build .#fapolicyd
 nix build .#rustinel
 nix build .#yara-forge-rules
 nix build .#sigma-rules
+
+# MiniSOC engine unit tests (also run in the Nix build)
+cd packages/minisoc && nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo test
 
 # Run VM integration tests
 nix flake check
@@ -102,7 +114,7 @@ nix build example#nixosConfigurations.from-local.config.system.build.vm
 
 ## Testing
 
-- Tests are NixOS VM tests in `checks/` (fapolicyd ×3 profiles, elastic-agent standalone, jit-hater)
+- Tests are NixOS VM tests in `checks/` (fapolicyd ×3 profiles, elastic-agent standalone, jit-hater, minisoc) plus `minisoc-vector` (VRL unit tests) and the MiniSOC `cargo test` suite run in the package build
 - fapolicyd tests verify: daemon is active, `fapolicyd-cli --list` works, config files exist in `/etc`, user/group exist
 - The jit-hater test asserts the service stays `active` after 15s (a config schema mismatch makes it crash-loop with `Restart=on-failure`), the binary accepts the generated config (no `unknown field` in the journal), the tmpfs dump dir is root 0700, and the `rules` CLI works
 - No automated tests for rustinel yet
