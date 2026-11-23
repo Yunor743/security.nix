@@ -9,13 +9,18 @@ ColumnLayout {
     property var st: ({})
     property string tab: "discarded"
     property string selectedId: ""
+    // Bottom corners: tabs under the content, next to the anchored edge,
+    // so they stay reachable without scrolling.
+    property bool tabsAtBottom: false
     signal action(string name, string arg)
     spacing: 4
 
     readonly property var ai: st.ai || ({ enabled: false })
     readonly property var filter: st.filter || ({})
 
-    RowLayout {
+    Tabs { visible: !m.tabsAtBottom }
+
+    component Tabs: RowLayout {
         spacing: 3
         Repeater {
             model: [
@@ -166,4 +171,6 @@ ColumnLayout {
             }
         }
     }
+
+    Tabs { visible: m.tabsAtBottom }
 }

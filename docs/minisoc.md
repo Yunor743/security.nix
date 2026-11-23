@@ -366,6 +366,14 @@ details). Everything can be overridden: `width`, `detailsWidth`,
 `maxHeight`, `visibleEvents`, `position`, `layer`, `margin`, `opacity`,
 `screen`, `font`, `monoFont`, `fontSize`, `radius`, `colors.*`.
 
+Desktop notifications: the widget sends a `notify-send` for every new
+visible alert (icon and urgency follow the severity, `critical` stays
+until dismissed). Alerts that are already discarded or filtered never
+notify, and nothing fires on widget startup for pre-existing alerts.
+`ui.notify.enable` (default `true`) turns it off;
+`ui.notify.minimumSeverity` (default `low`) raises the floor (`medium`,
+`high`, `critical`).
+
 IPC (keybindings, scripts): `minisoc-ui-ipc call minisoc toggleManage`,
 `details <id>`, `close`, `setProfile analyst`.
 
@@ -482,9 +490,9 @@ services.minisoc.ai.analysis = {
   autoDiscardPolicy = {
     mode = "suggest";              # or "automatic"
     maximumSeverity = "low";       # info | low | medium | high
-    minimumConfidence = 0.95;      # on benign_confidence
+    minimumConfidence = 0.75;      # on benign_confidence
     requireRepeatedBenignPattern = true;
-    minimumOccurrences = 3;
+    minimumOccurrences = 2;
   };
 };
 ```
@@ -505,9 +513,9 @@ discard is recorded with its justification, visible in *Discarded* with
 services.minisoc.ai.autoFilter = {
   enable = true;
   mode = "suggest";                # or "automatic"
-  minimumConfidence = 0.98;
+  minimumConfidence = 0.85;
   requireRepeatedEvents = true;
-  minimumOccurrences = 5;
+  minimumOccurrences = 3;
   protectSeverity = [ "critical" "high" ];
   backupBeforeWrite = true;
 };

@@ -4,6 +4,7 @@
   makeWrapper,
   quickshell,
   minisoc,
+  libnotify,
   xdg-utils,
 }:
 
@@ -23,7 +24,12 @@ stdenvNoCC.mkDerivation {
     makeWrapper ${lib.getExe quickshell} $out/bin/minisoc-ui \
       --add-flags "-p $out/share/minisoc/ui" \
       --set-default MINISOC_BIN ${lib.getExe minisoc} \
-      --suffix PATH : ${lib.makeBinPath [ xdg-utils ]}
+      --suffix PATH : ${
+        lib.makeBinPath [
+          libnotify
+          xdg-utils
+        ]
+      }
     # IPC helper: `minisoc-ui-ipc call minisoc toggleManage`
     makeWrapper ${lib.getExe quickshell} $out/bin/minisoc-ui-ipc \
       --add-flags "ipc -p $out/share/minisoc/ui"

@@ -228,6 +228,8 @@ pub struct AutoDiscardCfg {
     pub mode: String,
     pub maximum_severity: String,
     pub minimum_confidence: f64,
+    /// low | medium | high (the model's false_positive_likelihood)
+    pub minimum_false_positive_likelihood: String,
     pub require_repeated_benign_pattern: bool,
     pub minimum_occurrences: i64,
 }
@@ -237,9 +239,10 @@ impl Default for AutoDiscardCfg {
         Self {
             mode: "off".into(),
             maximum_severity: "low".into(),
-            minimum_confidence: 0.95,
+            minimum_confidence: 0.75,
+            minimum_false_positive_likelihood: "high".into(),
             require_repeated_benign_pattern: true,
-            minimum_occurrences: 3,
+            minimum_occurrences: 2,
         }
     }
 }
@@ -250,6 +253,8 @@ pub struct AutoFilterCfg {
     /// off | suggest | automatic
     pub mode: String,
     pub minimum_confidence: f64,
+    /// low | medium | high (the model's false_positive_likelihood)
+    pub minimum_false_positive_likelihood: String,
     pub require_repeated_events: bool,
     pub minimum_occurrences: i64,
     /// critical and high are always protected, whatever this list says.
@@ -261,9 +266,10 @@ impl Default for AutoFilterCfg {
     fn default() -> Self {
         Self {
             mode: "off".into(),
-            minimum_confidence: 0.98,
+            minimum_confidence: 0.85,
+            minimum_false_positive_likelihood: "high".into(),
             require_repeated_events: true,
-            minimum_occurrences: 5,
+            minimum_occurrences: 3,
             protect_severity: vec!["critical".into(), "high".into()],
             backup_before_write: true,
         }

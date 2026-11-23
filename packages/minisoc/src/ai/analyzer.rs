@@ -271,6 +271,9 @@ fn process(
                 .set_analysis(&event.id, &provider, &model, &cached, true)
                 .map_err(|e| e.to_string())?;
             apply_discard_policy(cfg, store, &event.id, &cached);
+            // Recurring patterns are served from the cache: they must still be
+            // able to trigger a rule proposal (guarded by has_proposal).
+            maybe_auto_filter(cfg, store, shared, &event, &cached);
             return Ok(Some((cached, provider, model)));
         }
     }
@@ -326,7 +329,9 @@ fn apply_discard_policy(cfg: &Config, store: &Store, id: &str, analysis: &Value)
     let pinned = store.is_pinned(id).unwrap_or(true);
     let stats = store.fingerprint_stats(&e.fingerprint).unwrap_or(json!({}));
     match policy::auto_discard(&e.severity, pinned, analysis, &stats, &cfg.ai.auto_discard) {
-        Decision::Keep(_) => {}
+        Decision::Keep(why) => {
+            info!("auto-discard: kept {} ({}): {}", e.id, e.severity, why);
+        }
         Decision::Suggest(reasons) => {
             if !store.has_proposal("discard", &e.id).unwrap_or(true) {
                 let _ = store.add_proposal("discard", &e.id, &e.id, &json!({"reasons": reasons}),
@@ -368,8 +373,11 @@ fn maybe_auto_filter(
     {
         return;
     }
-    let benign = analysis["suggested_action"] == "discard"
-        && analysis["false_positive_likelihood"] == "high"
+    // Judge the verdict, not the verb: a cautious model rarely says "discard".
+    let cls = analysis["classification"].as_str().unwrap_or("unknown");
+    let benign = !policy::is_alarming(cls)
+        && (policy::is_benign(cls) || analysis["suggested_action"] == "discard")
+        && policy::fp_likely_enough(analysis, &af.minimum_false_positive_likelihood)
         && analysis["benign_confidence"].as_f64().unwrap_or(0.0) >= af.minimum_confidence;
     if !benign
         || store

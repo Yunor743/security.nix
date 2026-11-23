@@ -31,6 +31,7 @@ let
       detailsWidth
       visibleEvents
       maxHeight
+      notify
       colors
       ;
   };
@@ -191,6 +192,30 @@ in
       visibleEvents = lib.mkOption {
         type = lib.types.nullOr lib.types.int;
         default = null;
+      };
+      notify = lib.mkOption {
+        type = lib.types.submodule {
+          options = {
+            enable = lib.mkOption {
+              type = lib.types.bool;
+              default = true;
+              description = "Send a desktop notification (`notify-send`) for every new visible alert.";
+            };
+            minimumSeverity = lib.mkOption {
+              type = lib.types.enum [
+                "info"
+                "low"
+                "medium"
+                "high"
+                "critical"
+              ];
+              default = "low";
+              description = "Notify only for alerts at least this severe (default: every detection).";
+            };
+          };
+        };
+        default = { };
+        description = "Desktop notifications for new alerts (urgency and icon follow the severity).";
       };
       colors = lib.mkOption {
         type = lib.types.attrsOf lib.types.str;

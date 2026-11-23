@@ -22,6 +22,31 @@ pub fn max_auto_rank(configured: &str) -> usize {
     sev_rank(configured).min(sev_rank("high"))
 }
 
+/// Verdicts that keep an alert visible whatever else the model says.
+pub fn is_alarming(classification: &str) -> bool {
+    matches!(
+        classification,
+        "malicious" | "suspicious" | "reconnaissance" | "policy_violation" | "unknown"
+    )
+}
+
+pub fn is_benign(classification: &str) -> bool {
+    matches!(classification, "benign" | "false_positive")
+}
+
+/// `false_positive_likelihood` at least `minimum` (low < medium < high);
+/// "unknown" never qualifies.
+pub fn fp_likely_enough(analysis: &Value, minimum: &str) -> bool {
+    let rank = |s: &str| match s {
+        "low" => 1,
+        "medium" => 2,
+        "high" => 3,
+        _ => 0,
+    };
+    let got = rank(analysis["false_positive_likelihood"].as_str().unwrap_or(""));
+    got > 0 && got >= rank(minimum).max(1)
+}
+
 pub fn auto_discard(
     event_sev: &str,
     pinned: bool,
@@ -45,17 +70,18 @@ pub fn auto_discard(
     if sev_rank(event_sev) > max_auto_rank(&cfg.maximum_severity) {
         return keep("severity above the configured maximum");
     }
-    if analysis["suggested_action"] != "discard" {
-        return keep("the analysis does not suggest discarding");
-    }
-    if matches!(
-        analysis["classification"].as_str(),
-        Some("malicious" | "suspicious" | "unknown" | "reconnaissance")
-    ) {
+    // A cautious SOC model rarely writes the word "discard": judge the
+    // verdict (classification), not the verb. A non-benign verdict always
+    // wins, whatever action the model suggests.
+    let cls = analysis["classification"].as_str().unwrap_or("unknown");
+    if is_alarming(cls) {
         return keep("classification is not benign");
     }
-    if analysis["false_positive_likelihood"] != "high" {
-        return keep("false-positive likelihood is not high");
+    if !is_benign(cls) && analysis["suggested_action"].as_str() != Some("discard") {
+        return keep("the analysis does not conclude benign");
+    }
+    if !fp_likely_enough(analysis, &cfg.minimum_false_positive_likelihood) {
+        return keep("false-positive likelihood below the configured minimum");
     }
     let benign = analysis["benign_confidence"].as_f64().unwrap_or(0.0);
     if benign < cfg.minimum_confidence {
@@ -77,7 +103,13 @@ pub fn auto_discard(
             "benign_confidence {benign:.2} >= {:.2}",
             cfg.minimum_confidence
         ),
-        "false_positive_likelihood high".into(),
+        format!(
+            "false_positive_likelihood {} >= {}",
+            analysis["false_positive_likelihood"]
+                .as_str()
+                .unwrap_or("?"),
+            cfg.minimum_false_positive_likelihood
+        ),
         format!(
             "pattern seen {} times, {} benign analyses",
             stats["occurrences"], stats["benign_analyses"]
@@ -325,7 +357,7 @@ mod tests {
             Decision::Keep(_)
         ));
         assert!(matches!(
-            auto_discard("low", false, &a("discard", "high", 0.9), &repeated(), &cfg),
+            auto_discard("low", false, &a("discard", "high", 0.7), &repeated(), &cfg),
             Decision::Keep(_)
         ));
         assert!(matches!(
@@ -338,14 +370,12 @@ mod tests {
             ),
             Decision::Keep(_)
         ));
+        // Not benign: only the verb "investigate" with a non-benign
+        // classification stays (the classification, not the verb, decides).
+        let not_benign = json!({"suggested_action": "investigate", "classification": "suspicious",
+            "false_positive_likelihood": "high", "benign_confidence": 1.0});
         assert!(matches!(
-            auto_discard(
-                "low",
-                false,
-                &a("investigate", "high", 1.0),
-                &repeated(),
-                &cfg
-            ),
+            auto_discard("low", false, &not_benign, &repeated(), &cfg),
             Decision::Keep(_)
         ));
         // A confident *detection* is not a confident *benign* verdict.
@@ -364,6 +394,44 @@ mod tests {
                 &json!({"occurrences": 1, "benign_analyses": 1}),
                 &cfg
             ),
+            Decision::Keep(_)
+        ));
+    }
+
+    #[test]
+    fn alarming_verdict_wins_over_discard_verb() {
+        let cfg = auto("automatic");
+        for cls in ["malicious", "suspicious", "reconnaissance", "unknown"] {
+            let an = json!({"suggested_action": "discard", "classification": cls,
+                "false_positive_likelihood": "high", "benign_confidence": 1.0});
+            assert!(
+                matches!(
+                    auto_discard("low", false, &an, &repeated(), &cfg),
+                    Decision::Keep(_)
+                ),
+                "{cls} must stay visible"
+            );
+        }
+    }
+
+    #[test]
+    fn false_positive_likelihood_threshold_is_configurable() {
+        let mut cfg = auto("automatic");
+        let medium = json!({"suggested_action": "investigate", "classification": "false_positive",
+            "false_positive_likelihood": "medium", "benign_confidence": 0.9});
+        assert!(matches!(
+            auto_discard("low", false, &medium, &repeated(), &cfg),
+            Decision::Keep(_)
+        ));
+        cfg.minimum_false_positive_likelihood = "medium".into();
+        assert!(matches!(
+            auto_discard("low", false, &medium, &repeated(), &cfg),
+            Decision::Discard(_)
+        ));
+        let low = json!({"suggested_action": "investigate", "classification": "false_positive",
+            "false_positive_likelihood": "low", "benign_confidence": 0.9});
+        assert!(matches!(
+            auto_discard("low", false, &low, &repeated(), &cfg),
             Decision::Keep(_)
         ));
     }

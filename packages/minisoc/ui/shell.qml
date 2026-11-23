@@ -23,6 +23,8 @@ ShellRoot {
     property string draft: ""
     property string note: ""
     property bool manageOpen: th.manageOpen
+    // Opening the panel in a bottom corner: show its tabs (anchored edge).
+    onManageOpenChanged: if (th.bottomUp) { flick.stick = true; Qt.callLater(flick.follow); }
     property string profileOverride: ""
     property real now: Date.now()
     // Alerts discarded from the widget, hidden at once (before the engine
@@ -84,6 +86,7 @@ ShellRoot {
             const h = {};
             for (const id in root.hidden) if (live.has(id)) h[id] = true;
             root.hidden = h;
+            root.notifyAlerts(parsed);
             if (root.selectedId !== "") root.loadDetails();
         }
     }
@@ -99,6 +102,52 @@ ShellRoot {
 
     // ---------------------------------------------------------------- actions
     function run(args) { Quickshell.execDetached([root.bin].concat(args)); refresh.restart(); }
+
+    // ---------------------------------------------- notify-send per detection
+    // First state load only learns what already exists (no startup spam);
+    // every later change notifies for unseen active alerts. Severity ranks
+    // gate the noise; critical gets a sticky notification.
+    property bool notifyInit: false
+    property var seenAlerts: ({})
+
+    function notifyAlerts(st) {
+        const nc = (th.cfg && th.cfg.notify) ? th.cfg.notify : {};
+        const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+        const want = rank[nc.minimumSeverity] !== undefined ? rank[nc.minimumSeverity] : 1;
+        const fresh = [];
+        for (const e of (st.recent || [])) {
+            if (!e || !e.id || root.seenAlerts[e.id]) continue;
+            root.seenAlerts[e.id] = true;
+            if (!root.notifyInit) continue;
+            if (e.discarded || e.filtered_by) continue;
+            const r = rank[e.severity] !== undefined ? rank[e.severity] : -1;
+            if (r < want) continue;
+            fresh.push(e);
+        }
+        // Event ids are unique and stable (a recurring pattern keeps its id):
+        // keep the seen set until a size cap, so an alert leaving and coming
+        // back to the exported window is never notified twice.
+        const ids = Object.keys(root.seenAlerts);
+        if (ids.length > 2000) {
+            const keep = new Set(ids.slice(ids.length - 1000));
+            const s = {};
+            for (const id of keep) s[id] = true;
+            root.seenAlerts = s;
+        }
+        fresh.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+        for (const e of fresh) {
+            const icons = { critical: "dialog-error", high: "dialog-warning", medium: "dialog-warning" };
+            const urgent = e.severity === "critical" || e.severity === "high";
+            Quickshell.execDetached(["notify-send",
+                "--app-name=MiniSOC",
+                "--icon=" + (icons[e.severity] || "dialog-information"),
+                "--urgency=" + (urgent ? "critical" : "normal"),
+                "--expire-time=" + (urgent ? 0 : 8000),
+                (e.severity || "?").toUpperCase() + " - " + (e.source || "minisoc"),
+                e.message || ""]);
+        }
+        root.notifyInit = true;
+    }
     Timer { id: refresh; interval: 700; onTriggered: { stateFile.reload(); if (root.selectedId !== "") root.loadDetails(); } }
 
     function select(id) {
@@ -287,15 +336,11 @@ ShellRoot {
                         width: parent.width
                         spacing: th.minimal ? 4 : 6
 
-                        // Order: summary at the anchored edge, then pinned,
-                        // then the feed (and the management panel away
-                        // from the corner).
-                        ManagePanel {
-                            visible: root.manageOpen && th.bottomUp
-                            Layout.fillWidth: true
-                            theme: th; st: root.st; selectedId: root.selectedId
-                            onAction: (n, a) => root.onAction(n, a)
-                        }
+                        // Order: summary at the anchored edge, pinned, the
+                        // feed. The management panel sits next to the
+                        // summary: in bottom corners its tabs are just above
+                        // the summary line (reachable without scrolling)
+                        // and its content grows upwards.
                         Summary { visible: !th.bottomUp }
                         AlertList {
                             Layout.fillWidth: true
@@ -312,6 +357,13 @@ ShellRoot {
                             Layout.fillWidth: true
                             theme: th; model: root.recentOrdered; selectedId: root.selectedId; rightAligned: th.rightAligned
                             onAction: (n, id) => root.onAction(n, id)
+                        }
+                        ManagePanel {
+                            visible: root.manageOpen && th.bottomUp
+                            Layout.fillWidth: true
+                            tabsAtBottom: true
+                            theme: th; st: root.st; selectedId: root.selectedId
+                            onAction: (n, a) => root.onAction(n, a)
                         }
                         Summary { visible: th.bottomUp }
                         ManagePanel {

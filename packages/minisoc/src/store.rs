@@ -445,7 +445,8 @@ impl Store {
     }
 
     /// Occurrences of a similarity group and how many of its analyses
-    /// concluded "benign, can be discarded".
+    /// concluded "benign" (a cautious model rarely writes "discard", so the
+    /// verdict is judged on the classification).
     pub fn fingerprint_stats(&self, fp: &str) -> R<Value> {
         let (events, occ): (i64, i64) = self.conn.query_row(
             "SELECT COUNT(*), COALESCE(SUM(occurrences), 0) FROM events WHERE fingerprint = ?1",
@@ -454,7 +455,7 @@ impl Store {
         )?;
         let benign: i64 = self.conn.query_row(
             "SELECT COUNT(*) FROM analyses a JOIN events e ON e.id = a.event_id WHERE e.fingerprint = ?1
-               AND json_extract(a.result, '$.suggested_action') = 'discard'
+               AND json_extract(a.result, '$.classification') IN ('benign', 'false_positive')
                AND json_extract(a.result, '$.false_positive_likelihood') = 'high'",
             [fp], |r| r.get(0),
         )?;
@@ -543,8 +544,9 @@ impl Store {
 
     pub fn has_proposal(&self, kind: &str, fp: &str) -> R<bool> {
         Ok(self.conn.query_row(
-            "SELECT 1 FROM proposals WHERE kind = ?1 AND fingerprint = ?2 AND status IN ('pending', 'applied', 'accepted', 'rejected')",
-            params![kind, fp], |_| Ok(()),
+            "SELECT 1 FROM proposals WHERE kind = ?1 AND fingerprint = ?2 AND (status IN ('pending', 'applied', 'accepted', 'rejected')
+               OR (status = 'invalid' AND created_at >= ?3))",
+            params![kind, fp, crate::util::format_ts(chrono::Utc::now() - chrono::Duration::hours(6))], |_| Ok(()),
         ).optional()?.is_some())
     }
 
@@ -762,6 +764,39 @@ mod tests {
         assert_eq!(s.counts().unwrap()["active"], 1);
         assert!(s.restore(&evs[1].id, "user").unwrap());
         assert_eq!(s.list("active", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn invalid_proposals_only_block_for_a_while() {
+        let s = mem();
+        s.add_proposal("filter", "evt-x", "fp1", &json!({}), "r", 0.5, "invalid")
+            .unwrap();
+        assert!(
+            s.has_proposal("filter", "fp1").unwrap(),
+            "recent policy rejection blocks retries"
+        );
+        s.conn
+            .execute(
+                "UPDATE proposals SET created_at = '2000-01-01T00:00:00.000Z'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            !s.has_proposal("filter", "fp1").unwrap(),
+            "old rejection no longer blocks"
+        );
+        s.add_proposal("filter", "evt-x", "fp1", &json!({}), "r", 0.9, "rejected")
+            .unwrap();
+        s.conn
+            .execute(
+                "UPDATE proposals SET created_at = '2000-01-01T00:00:00.000Z'",
+                [],
+            )
+            .unwrap();
+        assert!(
+            s.has_proposal("filter", "fp1").unwrap(),
+            "a user refusal is final"
+        );
     }
 
     #[test]

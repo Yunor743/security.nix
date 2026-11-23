@@ -240,12 +240,14 @@ let
         mode = if cfg.ai.analysis.autoDiscard then mode else "off";
         maximum_severity = maximumSeverity;
         minimum_confidence = minimumConfidence;
+        minimum_false_positive_likelihood = minimumFalsePositiveLikelihood;
         require_repeated_benign_pattern = requireRepeatedBenignPattern;
         minimum_occurrences = minimumOccurrences;
       };
       auto_filter = with cfg.ai.autoFilter; {
         mode = if enable then mode else "off";
         minimum_confidence = minimumConfidence;
+        minimum_false_positive_likelihood = minimumFalsePositiveLikelihood;
         require_repeated_events = requireRepeatedEvents;
         minimum_occurrences = minimumOccurrences;
         protect_severity = protectSeverity;
@@ -546,8 +548,17 @@ in
           };
           minimumConfidence = lib.mkOption {
             type = lib.types.float;
-            default = 0.95;
+            default = 0.75;
             description = "Minimum `benign_confidence` (confidence that the event is benign, not detection confidence).";
+          };
+          minimumFalsePositiveLikelihood = lib.mkOption {
+            type = lib.types.enum [
+              "low"
+              "medium"
+              "high"
+            ];
+            default = "high";
+            description = "Minimum `false_positive_likelihood` given by the model. A suspicious/malicious/unknown verdict is always kept, whatever this says.";
           };
           requireRepeatedBenignPattern = lib.mkOption {
             type = lib.types.bool;
@@ -556,7 +567,7 @@ in
           };
           minimumOccurrences = lib.mkOption {
             type = lib.types.int;
-            default = 3;
+            default = 2;
           };
           preservePinned = lib.mkOption {
             type = lib.types.bool;
@@ -578,7 +589,16 @@ in
         };
         minimumConfidence = lib.mkOption {
           type = lib.types.float;
-          default = 0.98;
+          default = 0.85;
+        };
+        minimumFalsePositiveLikelihood = lib.mkOption {
+          type = lib.types.enum [
+            "low"
+            "medium"
+            "high"
+          ];
+          default = "high";
+          description = "Minimum `false_positive_likelihood` of the analysis that triggers a rule proposal.";
         };
         requireRepeatedEvents = lib.mkOption {
           type = lib.types.bool;
@@ -586,7 +606,7 @@ in
         };
         minimumOccurrences = lib.mkOption {
           type = lib.types.int;
-          default = 5;
+          default = 3;
         };
         protectSeverity = lib.mkOption {
           type = lib.types.listOf sevType;
