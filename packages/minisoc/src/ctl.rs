@@ -87,7 +87,10 @@ pub fn list(cfg: &Config, state: &str, limit: usize, as_json: bool) -> Res {
         for e in v.as_array().unwrap() {
             let flags = [
                 ("P", e["pinned"] == true),
-                ("D", e["discarded"] == true),
+                (
+                    if e["verdict"] == "tp" { "T" } else { "X" },
+                    e["closed"] == true,
+                ),
                 ("F", !e["filtered_by"].is_null()),
                 ("A", e["analyzed"] == true),
             ]
@@ -140,21 +143,22 @@ pub fn set_pin(cfg: &Config, id: &str, pinned: bool) -> Res {
     Ok(())
 }
 
-pub fn discard(cfg: &Config, id: &str, reason: Option<&str>) -> Res {
+/// Close an alert as true positive (`tp`) or false positive (`fp`).
+pub fn close(cfg: &Config, id: &str, verdict: &str, reason: Option<&str>) -> Res {
     let store = open_store(cfg)?;
     need(&store, id)?;
     store
-        .discard(id, "user", json!({"reason": reason}))
+        .close(id, verdict, "user", json!({"reason": reason}))
         .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn discard_all(cfg: &Config, reason: Option<&str>) -> Res {
+pub fn close_all_fp(cfg: &Config, reason: Option<&str>) -> Res {
     let store = open_store(cfg)?;
     let n = store
-        .discard_all("user", json!({"reason": reason, "bulk": true}))
+        .close_all_fp("user", json!({"reason": reason, "bulk": true}))
         .map_err(|e| e.to_string())?;
-    println!("discarded {n} alert(s) (pinned alerts kept; restore with `minisoc restore <id>`)");
+    println!("closed {n} alert(s) as false positive (pinned alerts kept; re-open with `minisoc reopen <id>`)");
     Ok(())
 }
 
@@ -354,10 +358,11 @@ pub fn filter_list(cfg: &Config, as_json: bool) -> Res {
         .iter()
         .map(|r| {
             let mut v = r.summary();
-            v["hits"] = stats
-                .get(&r.id)
-                .map(|s| s["hits"].clone())
-                .unwrap_or(json!(0));
+            let s = stats.get(&r.id);
+            v["hits"] = s.map(|s| s["hits"].clone()).unwrap_or(json!(0));
+            v["since"] = s.map(|s| s["since"].clone()).unwrap_or(Value::Null);
+            v["hidden"] = s.map(|s| s["hidden"].clone()).unwrap_or(json!(0));
+            v["owner"] = json!(fm.owner(std::path::Path::new(&r.origin)));
             v
         })
         .collect();
@@ -365,10 +370,12 @@ pub fn filter_list(cfg: &Config, as_json: bool) -> Res {
     print(&v, as_json, |v| {
         for r in v["rules"].as_array().unwrap() {
             println!(
-                "{} [{}] hits={} {} — {}",
+                "{} [{}, {}] {} filtered since {} {} — {}",
                 r["id"].as_str().unwrap_or(""),
+                r["owner"].as_str().unwrap_or("?"),
                 if r["enabled"] == true { "on" } else { "off" },
                 r["hits"],
+                r["since"].as_str().unwrap_or("its creation (engine not run yet)"),
                 r["generated_by"]
                     .as_str()
                     .map(|g| format!("({g})"))
@@ -441,7 +448,7 @@ pub fn proposal_decide(cfg: &Config, id: i64, accept: bool) -> Res {
     if accept {
         match p["kind"].as_str() {
             Some("discard") => {
-                store.discard(event, "user", json!({"via": "ai_proposal", "proposal": id, "reasons": p["payload"]["reasons"]}))
+                store.close(event, "fp", "user", json!({"via": "ai_proposal", "proposal": id, "reasons": p["payload"]["reasons"]}))
                     .map_err(|e| e.to_string())?;
             }
             Some("filter") => {
@@ -449,10 +456,11 @@ pub fn proposal_decide(cfg: &Config, id: i64, accept: bool) -> Res {
                     .get("rule")
                     .filter(|r| r.is_object())
                     .ok_or("proposal has no valid rule")?;
+                // AI-generated: the rule joins the AI file, not the user's.
                 filters::append_rule(
-                    &cfg.user_filter_file(),
+                    &cfg.ai_filter_file(),
                     rule,
-                    Some(&cfg.backup_dir()),
+                    Some(&cfg.ai_backup_dir()),
                     cfg.filter.max_backups,
                 )?;
                 store
@@ -461,6 +469,21 @@ pub fn proposal_decide(cfg: &Config, id: i64, accept: bool) -> Res {
                         "user",
                         "filter_created",
                         json!({"rule_id": rule["id"], "via": "ai_proposal"}),
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Some("review") => {
+                // Re-checked against the current rules and closures.
+                crate::ai::review::accept(cfg, &store, &p["payload"])?;
+                store
+                    .history(
+                        None,
+                        "user",
+                        &format!(
+                            "filter_review_{}",
+                            p["payload"]["action"].as_str().unwrap_or("change")
+                        ),
+                        json!({"rule_id": p["payload"]["id"], "via": "ai_proposal", "proposal": id}),
                     )
                     .map_err(|e| e.to_string())?;
             }

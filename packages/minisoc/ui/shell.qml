@@ -27,8 +27,8 @@ ShellRoot {
     onManageOpenChanged: if (th.bottomUp) { flick.stick = true; Qt.callLater(flick.follow); }
     property string profileOverride: ""
     property real now: Date.now()
-    // Alerts discarded from the widget, hidden at once (before the engine
-    // republishes its state).
+    // Alerts closed (TP/FP) from the widget, hidden at once (before the
+    // engine republishes its state).
     property var hidden: ({})
 
     // Last state publication (kept apart from `st` so liveness updates do
@@ -39,7 +39,7 @@ ShellRoot {
     readonly property bool expanded: selectedId !== ""
 
     function shown(list) {
-        return (list || []).filter(e => !e.discarded && !root.hidden[e.id]);
+        return (list || []).filter(e => !e.closed && !e.discarded && !root.hidden[e.id]);
     }
     readonly property var pinnedList: shown(st.pinned)
     readonly property var recentList: shown(st.recent).slice(0, th.visibleEvents)
@@ -168,22 +168,24 @@ ShellRoot {
         switch (name) {
         case "details": root.select(arg); break;
         case "close": root.close(); break;
-        case "pin": case "unpin": case "restore": root.run([name, arg]); break;
-        case "discard": {
+        case "pin": case "unpin": root.run([name, arg]); break;
+        case "restore": case "reopen": root.run(["reopen", arg]); break;
+        // Close with a verdict: true positive (real) / false positive (noise).
+        case "discard": case "tp": case "fp": {
             const h = Object.assign({}, root.hidden);
             h[arg] = true;
             root.hidden = h;
             if (root.selectedId === arg) root.close();
-            root.run(["discard", arg]);
+            root.run([name === "tp" ? "tp" : "fp", arg]);
             break;
         }
-        case "discard-all": {
+        case "discard-all": case "fp-all": {
             // Pinned alerts are kept (engine side too).
             const h = Object.assign({}, root.hidden);
             for (const e of root.shown(root.st.recent)) h[e.id] = true;
             root.hidden = h;
             if (root.selectedId !== "" && h[root.selectedId]) root.close();
-            root.run(["discard", "--all"]);
+            root.run(["fp", "--all"]);
             break;
         }
         case "ai": root.run(["analyze", arg]); root.note = "Analysis requested — results appear here when ready."; break;
@@ -200,6 +202,8 @@ ShellRoot {
         case "rollback": root.run(["filter", "rollback"]); break;
         case "open-rules":
             Quickshell.execDetached(["xdg-open", (st.filter || {}).user_file || ""]); break;
+        case "open-ai-rules":
+            Quickshell.execDetached(["xdg-open", (st.filter || {}).ai_file || ""]); break;
         case "edit-prompt": Quickshell.execDetached([root.bin, "prompts", "edit", arg]); break;
         }
     }
@@ -227,8 +231,12 @@ ShellRoot {
         target: "minisoc"
         function details(id: string): void { root.selectedId = ""; root.select(id); }
         function close(): void { root.close(); }
-        function discard(id: string): void { root.onAction("discard", id); }
-        function discardAll(): void { root.onAction("discard-all", ""); }
+        function tp(id: string): void { root.onAction("tp", id); }
+        function fp(id: string): void { root.onAction("fp", id); }
+        function closeAllFp(): void { root.onAction("fp-all", ""); }
+        // Former names (keybindings written against them).
+        function discard(id: string): void { root.onAction("fp", id); }
+        function discardAll(): void { root.onAction("fp-all", ""); }
         function toggleManage(): void { root.manageOpen = !root.manageOpen; }
         function setProfile(p: string): void { root.profileOverride = p; root.applyUi(uiFile.text()); }
         function windowWidth(): int { return win.implicitWidth; }
@@ -435,11 +443,11 @@ ShellRoot {
             style: Text.Raised; styleColor: th.shadow
         }
         Item { Layout.fillWidth: true }
-        Text { // discard every active alert (pinned kept); second click confirms
+        Text { // close every active alert as FP (pinned kept); second click confirms
             id: discardAll
             property bool armed: false
             visible: root.recentList.length > 0 && (!th.minimal || compactHover.hovered || armed)
-            text: armed ? "confirm discard all?" : "discard all"
+            text: armed ? "confirm: close all as FP?" : "close all as FP"
             color: armed ? th.high : (discardAllMa.containsMouse ? th.fg : th.muted)
             font.family: th.mono; font.pixelSize: th.fontSize - 2; font.letterSpacing: 1
             style: Text.Raised; styleColor: th.shadow
@@ -451,7 +459,7 @@ ShellRoot {
                 onClicked: {
                     if (!discardAll.armed) { discardAll.armed = true; disarmAll.restart(); return; }
                     discardAll.armed = false;
-                    root.onAction("discard-all", "");
+                    root.onAction("fp-all", "");
                 }
             }
         }

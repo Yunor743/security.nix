@@ -9,14 +9,59 @@
 }:
 
 let
-  # Mock LLM endpoint (`custom` provider): a busybox CGI that always answers
+  # Mock LLM endpoint (`custom` provider): a busybox CGI. Analyses always say
   # "benign, discard, 99%" — the guardrails must still protect critical,
-  # medium (above maximumSeverity) and pinned alerts.
+  # medium (above maximumSeverity) and pinned alerts. Filter reviews (request
+  # mentioning the FP closures) propose one rule on the fictional noisy tool.
+  analysisReply = pkgs.writeText "analysis.json" (
+    builtins.toJSON {
+      output = builtins.toJSON {
+        summary = "Benign test activity";
+        classification = "benign";
+        severity_assessment = "info";
+        confidence = 0.99;
+        benign_confidence = 0.99;
+        false_positive_likelihood = "high";
+        suggested_action = "discard";
+        facts = [ "fictional test event" ];
+      };
+    }
+  );
+  reviewReply = pkgs.writeText "review.json" (
+    builtins.toJSON {
+      output = builtins.toJSON {
+        summary = "The fictional noisy tool is closed as FP repeatedly";
+        changes = [
+          {
+            action = "create";
+            match = {
+              source = "review_demo";
+              event_type = "demo_noise";
+              fields.exe = "/opt/demo/noisy-tool";
+            };
+            description = "Fictional noisy tool";
+            reason = "closed as false positive three times";
+            confidence = 0.9;
+          }
+          {
+            # Refused by the guardrails: a user rule is never changed.
+            action = "delete";
+            id = "user_initial_rule";
+            reason = "test";
+            confidence = 0.9;
+          }
+        ];
+      };
+    }
+  );
   mockLlm = pkgs.writeTextDir "cgi-bin/llm" ''
     #!/bin/sh
-    cat > /dev/null
+    body=$(cat)
     printf 'Content-Type: application/json\r\n\r\n'
-    printf '%s' '{"output": "{\"summary\": \"Benign test activity\", \"classification\": \"benign\", \"severity_assessment\": \"info\", \"confidence\": 0.99, \"benign_confidence\": 0.99, \"false_positive_likelihood\": \"high\", \"suggested_action\": \"discard\", \"facts\": [\"fictional test event\"]}"}'
+    case "$body" in
+      *closed_false_positive*) cat ${reviewReply} ;;
+      *) cat ${analysisReply} ;;
+    esac
   '';
 
   # Fictional Rustinel 1.8-style alerts (flat ECS keys).
@@ -145,6 +190,13 @@ pkgs.testers.runNixOSTest {
               requireRepeatedBenignPattern = false;
             };
           };
+          # Run on demand in the test (`minisoc review`); the scheduled one
+          # finds nothing to review at start.
+          filterReview = {
+            enable = true;
+            mode = "automatic";
+            interval = 1000;
+          };
           limits.requestsPerMinute = 600;
         };
       };
@@ -262,31 +314,72 @@ pkgs.testers.runNixOSTest {
         out = ctl(f"explain {whoami['id']}")
         assert "EXCLUDED by rule 'system_ignore_whoami_demo'" in out, out
 
-    with subtest("AI analysis + auto-discard guardrails"):
+    with subtest("AI analysis + auto-close as FP guardrails"):
         wait_for(lambda: all(e["analyzed"] for e in events() if not e["filtered_by"]), "AI analyses")
         low = find("Fictional Admin Tool Usage")
-        assert low["discarded"] and low["discarded_by"] == "ai", low
+        assert low["closed"] and low["closed_by"] == "ai" and low["verdict"] == "fp", low
         crit = find("FICTIONAL_Test_Marker")
         assert not crit["discarded"], "critical must never be auto-discarded"
         med = find("Suspicious Directory")
         assert not med["discarded"], "medium is above maximumSeverity=low"
         assert not find("Whoami Execution")["analyzed"], "filtered events are not sent to the AI"
         hist = json.loads(ctl(f"show {low['id']} --json"))["history"]
-        assert any(h["actor"] == "ai" and h["action"] == "discard" for h in hist), hist
+        assert any(h["actor"] == "ai" and h["action"] == "close_fp" for h in hist), hist
 
-    with subtest("restore, pin persistence across engine restart, discard"):
+    with subtest("reopen, pin persistence across engine restart, TP / FP"):
         low = find("Fictional Admin Tool Usage")
-        ctl(f"restore {low['id']}")
-        assert not find("Fictional Admin Tool Usage")["discarded"]
+        ctl(f"reopen {low['id']}")
+        assert not find("Fictional Admin Tool Usage")["closed"]
         med = find("Suspicious Directory")
         ctl(f"pin {med['id']}")
         user_systemctl("restart minisoc-engine")
         machine.wait_for_unit("minisoc-engine.service", "alice")
         assert any(e["id"] == med["id"] for e in events("pinned")), "pin survives a restart"
-        ctl(f"discard {low['id']} --reason seen")
-        assert any(e["id"] == low["id"] for e in events("discarded"))
+        ctl(f"tp {low['id']} --reason handled")
+        assert find("Fictional Admin Tool Usage")["verdict"] == "tp"
+        assert any(e["id"] == low["id"] for e in events("tp"))
+        ctl(f"fp {low['id']}")  # re-qualified
+        assert any(e["id"] == low["id"] for e in events("fp"))
+        assert not any(e["id"] == low["id"] for e in events("tp"))
         sh("test -e /var/log/rustinel/alerts.json.2026-11-23")  # logs untouched
         assert sh("wc -l < /var/log/rustinel/alerts.json.2026-11-23").strip() == "4"
+
+    with subtest("AI filter review: FP closures -> AI rule, counter, user rules untouched"):
+        def noisy(n):
+            line = json.dumps({"severity": "medium", "event_type": "demo_noise",
+                               "message": "fictional noisy tool started", "exe": "/opt/demo/noisy-tool", "n": n})
+            sh(f"echo '{line}' > /tmp/noisy.ndjson && chmod 644 /tmp/noisy.ndjson")
+            ctl("ingest --source review_demo /tmp/noisy.ndjson")
+        def noisy_events():
+            return [e for e in events() if e["message"] == "fictional noisy tool started"]
+        for n in range(3):
+            noisy(n)
+        wait_for(lambda: len(noisy_events()) == 3, "3 noisy alerts")
+        for e in noisy_events():
+            ctl(f"fp {e['id']}")
+        out = ctl("review")
+        print(out)
+        assert "applied: create ai-review-" in out, out
+        assert "rejected: delete" in out and "never changed" in out, out
+        ai_file = "/home/alice/.config/minisoc/ai_filters.yaml"
+        assert sh(f"stat -c '%a' {ai_file}").strip() == "600"
+        sh(f"grep -q 'generated_by: minisoc-ai-review' {ai_file}")
+        sh("! grep -q ai-review- /home/alice/.config/minisoc/alert_filter.yaml")
+        sh("grep -q user_initial_rule /home/alice/.config/minisoc/alert_filter.yaml")
+        # The engine hot-reloads the AI file: a new alert of that tool is filtered.
+        noisy(3)
+        wait_for(lambda: any((e["filtered_by"] or "").startswith("ai-review-") for e in noisy_events()),
+                 "new noisy alert filtered by the AI rule")
+        def ai_rule():
+            rules = json.loads(ctl("filter list --json"))["rules"]
+            return next((r for r in rules if r["id"].startswith("ai-review-")), None)
+        rule = wait_for(lambda: (lambda r: r if r and r["hits"] >= 1 else None)(ai_rule()), "counter")
+        assert rule["owner"] == "ai" and rule["since"], rule
+        # The counter changed (it is evidence): one more review, which keeps
+        # the rule (identical proposal refused); then nothing changed: no request.
+        out = ctl("review")
+        assert "identical rule already exists" in out, out
+        assert "skipped" in ctl("review"), "same evidence"
 
     with subtest("create filter from an alert: hot reload, backup, pinned stays visible"):
         crit = find("FICTIONAL_Test_Marker")
@@ -351,29 +444,29 @@ pkgs.testers.runNixOSTest {
         sh(f"su - alice -c '{env} grim /tmp/minisoc-minimal.png'")
         machine.copy_from_vm("/tmp/minisoc-minimal.png", "")
 
-    with subtest("discard from the widget hides the alert at once and closes its details"):
+    with subtest("FP from the widget hides the alert at once and closes its details"):
         manual = find("fictional manual event")
         before = int(ipc("shownCount"))
         ipc(f"details {manual['id']}")
-        ipc(f"discard {manual['id']}")
+        ipc(f"fp {manual['id']}")
         assert int(ipc("shownCount")) == before - 1, "hidden immediately"
         assert ipc("expanded") == "false", "details closed"
-        wait_for(lambda: find("fictional manual event")["discarded"], "engine records the discard")
+        wait_for(lambda: find("fictional manual event")["verdict"] == "fp", "engine records the FP closure")
         time.sleep(2)
         assert int(ipc("shownCount")) == before - 1, "still hidden after the engine republished"
 
-    with subtest("discard all: every active alert hidden, pinned kept, restorable"):
+    with subtest("close all as FP: every active alert hidden, pinned kept, re-openable"):
         sh("su - alice -c 'echo \"{\\\"severity\\\":\\\"medium\\\",\\\"message\\\":\\\"fictional bulk event\\\"}\" | minisoc ingest --source manual'")
         wait_for(lambda: find("fictional bulk event"), "bulk event")
         time.sleep(2)
-        ipc("discardAll")
+        ipc("closeAllFp")
         assert ipc("shownCount") == ipc("pinnedCount") == "1", "only the pinned alert remains"
-        wait_for(lambda: not events("active"), "engine discarded every active alert")
+        wait_for(lambda: not events("active"), "engine closed every active alert")
         assert len(events("pinned")) == 1
         bulk = find("fictional bulk event")
-        assert bulk["discarded"] and bulk["discarded_by"] == "user", bulk
-        ctl(f"restore {bulk['id']}")
-        assert not find("fictional bulk event")["discarded"]
+        assert bulk["closed"] and bulk["closed_by"] == "user" and bulk["verdict"] == "fp", bulk
+        ctl(f"reopen {bulk['id']}")
+        assert not find("fictional bulk event")["closed"]
         ipc("toggleManage")
         time.sleep(1)
         sh(f"su - alice -c '{env} grim /tmp/minisoc-compact.png'")

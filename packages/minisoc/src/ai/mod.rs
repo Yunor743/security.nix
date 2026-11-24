@@ -10,6 +10,7 @@ pub mod policy;
 pub mod prompts;
 pub mod providers;
 pub mod redact;
+pub mod review;
 
 use crate::util::{is_severity, truncate};
 use serde_json::{json, Map, Value};

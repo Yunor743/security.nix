@@ -151,7 +151,7 @@ fn literal_chars(pattern: &str) -> usize {
     n
 }
 
-fn check_matcher(m: &Value, w: &str) -> Result<(), String> {
+pub(crate) fn check_matcher(m: &Value, w: &str) -> Result<(), String> {
     match m {
         Value::String(s) if s.chars().count() >= 3 => Ok(()),
         Value::Number(_) | Value::Bool(_) => Ok(()),

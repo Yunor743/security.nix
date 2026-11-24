@@ -31,10 +31,14 @@ impl Engine {
         filters.seed();
         filters.reload(true);
         store
+            .sync_rule_stats(&filters.ruleset)
+            .map_err(|e| e.to_string())?;
+        store
             .refilter(&filters.ruleset)
             .map_err(|e| e.to_string())?;
         let analyzer =
             (cfg.ai.enable && cfg.ai.analysis.enabled).then(|| Analyzer::start(cfg.clone()));
+        crate::ai::review::spawn(cfg.clone());
         if let Some(a) = &analyzer {
             if cfg.ai.analysis.auto_analyze {
                 let min = sev_rank(&cfg.ai.analysis.min_severity);
@@ -61,9 +65,15 @@ impl Engine {
     pub fn tick(&mut self) -> bool {
         let mut changed = false;
         if self.filters.reload(false) {
+            // New or modified rules count from 0 again.
+            let reset = self
+                .store
+                .sync_rule_stats(&self.filters.ruleset)
+                .unwrap_or_default();
             let n = self.store.refilter(&self.filters.ruleset).unwrap_or(0);
             let _ = self.store.history(None, "engine", "rules_reloaded", json!({
-                "rules": self.filters.ruleset.rules.len(), "events_changed": n, "status": self.filters.status(),
+                "rules": self.filters.ruleset.rules.len(), "events_changed": n, "counters_reset": reset,
+                "status": self.filters.status(),
             }));
             changed = true;
         }
@@ -139,19 +149,19 @@ impl Engine {
             .iter()
             .map(|rule| {
                 let mut v = rule.summary();
-                v["hits"] = stats
-                    .get(&rule.id)
-                    .map(|s| s["hits"].clone())
-                    .unwrap_or(json!(0));
-                v["last_hit"] = stats
-                    .get(&rule.id)
-                    .map(|s| s["last_hit"].clone())
-                    .unwrap_or(Value::Null);
+                let s = stats.get(&rule.id);
+                // Alerts excluded since the rule was created or last changed.
+                v["hits"] = s.map(|s| s["hits"].clone()).unwrap_or(json!(0));
+                v["since"] = s.map(|s| s["since"].clone()).unwrap_or(Value::Null);
+                v["last_hit"] = s.map(|s| s["last_hit"].clone()).unwrap_or(Value::Null);
+                v["hidden"] = s.map(|s| s["hidden"].clone()).unwrap_or(json!(0));
+                v["owner"] = json!(self.filters.owner(std::path::Path::new(&rule.origin)));
                 v
             })
             .collect();
         let mut filter = self.filters.status();
         filter["user_file"] = json!(self.filters.user_file);
+        filter["ai_file"] = json!(self.filters.ai_file);
         filter["list"] = json!(rules);
         filter["debug"] = json!(self.cfg.filter.debug);
         filter["backups"] = json!(crate::filters::list_backups(&self.cfg.backup_dir()).len());
@@ -162,11 +172,15 @@ impl Engine {
             "counts": self.store.counts().unwrap_or(json!({})),
             "pinned": list("pinned", 100),
             "recent": list("active", r.export_recent),
-            "discarded": list("discarded", r.export_discarded),
+            "closed": list("closed", r.export_discarded),
             "filtered": list("filtered", r.export_filtered),
             "proposals": self.store.proposals(Some("pending"), 50).unwrap_or_default(),
             "filter": filter,
-            "ai": self.analyzer.as_ref().map(|a| a.status(&self.store)).unwrap_or(json!({"enabled": false})),
+            "ai": self.analyzer.as_ref().map(|a| {
+                let mut s = a.status(&self.store);
+                s["filter_review"] = crate::ai::review::status(&self.cfg, &self.store);
+                s
+            }).unwrap_or(json!({"enabled": false})),
         })
     }
 

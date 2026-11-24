@@ -64,6 +64,9 @@ pub struct FilterCfg {
     pub default_file: String,
     /// Read-only rule files managed by NixOS (evaluated first).
     pub system_files: Vec<String>,
+    /// Rules owned by the AI (auto-filter, scheduled filter review). The AI
+    /// never writes the user file.
+    pub ai_file: String,
     /// Create the user file (0600) when it does not exist. Never overwrites.
     pub seed: bool,
     /// Log, for every event, which rule conditions matched or failed.
@@ -77,6 +80,7 @@ impl Default for FilterCfg {
             file: None,
             default_file: "$XDG_CONFIG_HOME/minisoc/alert_filter.yaml".into(),
             system_files: vec![],
+            ai_file: "$XDG_CONFIG_HOME/minisoc/ai_filters.yaml".into(),
             seed: true,
             debug: false,
             max_backups: 20,
@@ -123,7 +127,8 @@ pub struct AiCfg {
     pub privacy: PrivacyCfg,
     pub auto_discard: AutoDiscardCfg,
     pub auto_filter: AutoFilterCfg,
-    /// name -> prompt file (system, analysis, enrichment, classification, filter)
+    pub filter_review: FilterReviewCfg,
+    /// name -> prompt file (system, analysis, enrichment, classification, filter, review)
     pub prompts: BTreeMap<String, String>,
     /// `<dir>/<name>.md` overrides everything, editable without rebuild.
     pub prompt_override_dir: String,
@@ -143,6 +148,7 @@ impl Default for AiCfg {
             privacy: PrivacyCfg::default(),
             auto_discard: AutoDiscardCfg::default(),
             auto_filter: AutoFilterCfg::default(),
+            filter_review: FilterReviewCfg::default(),
             prompts: BTreeMap::new(),
             prompt_override_dir: "$XDG_CONFIG_HOME/minisoc/prompts".into(),
         }
@@ -276,6 +282,48 @@ impl Default for AutoFilterCfg {
     }
 }
 
+/// Scheduled AI review of the AI's own rules from the alerts the user closed
+/// as false positive (and, as counter-examples, as true positive).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FilterReviewCfg {
+    /// off | suggest (pending proposals) | automatic (rules rewritten)
+    pub mode: String,
+    pub interval_hours: f64,
+    /// Closures considered (days back).
+    pub lookback_days: i64,
+    /// Closed alerts sent per verdict (most recent first).
+    pub max_alerts: usize,
+    /// A rule must cover at least this many alerts closed as FP by the user.
+    pub minimum_false_positives: usize,
+    /// A rule younger than this (since its last change) is not modified nor
+    /// deleted: its counter needs time.
+    pub minimum_rule_age_hours: f64,
+    /// A rule may be deleted when it excluded at most this many alerts since
+    /// its last change (or when it would hide a TP).
+    pub low_hits_threshold: i64,
+    pub max_changes: usize,
+    pub minimum_confidence: f64,
+    pub backup_before_write: bool,
+}
+
+impl Default for FilterReviewCfg {
+    fn default() -> Self {
+        Self {
+            mode: "off".into(),
+            interval_hours: 24.0,
+            lookback_days: 30,
+            max_alerts: 200,
+            minimum_false_positives: 3,
+            minimum_rule_age_hours: 72.0,
+            low_hits_threshold: 2,
+            max_changes: 5,
+            minimum_confidence: 0.7,
+            backup_before_write: true,
+        }
+    }
+}
+
 pub fn expand(path: &str) -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
     let var = |k: &str, def: String| {
@@ -359,6 +407,12 @@ impl Config {
                 .as_deref()
                 .unwrap_or(&self.filter.default_file),
         )
+    }
+    pub fn ai_filter_file(&self) -> PathBuf {
+        expand(&self.filter.ai_file)
+    }
+    pub fn ai_backup_dir(&self) -> PathBuf {
+        self.backup_dir().join("ai")
     }
     pub fn system_filter_files(&self) -> Vec<PathBuf> {
         self.filter.system_files.iter().map(|p| expand(p)).collect()

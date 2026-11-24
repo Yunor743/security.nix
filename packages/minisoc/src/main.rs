@@ -34,7 +34,7 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// List events (active, pinned, discarded, filtered, analyzed, all)
+    /// List events (active, pinned, closed, tp, fp, filtered, analyzed, all)
     List {
         #[arg(long, default_value = "active")]
         state: String,
@@ -56,19 +56,45 @@ enum Cmd {
     Unpin {
         id: String,
     },
-    /// Remove an alert from the active feed (logs are never modified)
-    Discard {
+    /// Close an alert as true positive: real activity, handled (logs are never modified)
+    Tp {
+        id: String,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Close an alert as false positive: noise. The AI filter review learns
+    /// from these
+    Fp {
         #[arg(required_unless_present = "all")]
         id: Option<String>,
-        /// Discard every active alert (pinned ones are kept)
+        /// Close every active alert as false positive (pinned ones are kept)
         #[arg(long, conflicts_with = "id")]
         all: bool,
         #[arg(long)]
         reason: Option<String>,
     },
-    /// Bring a discarded alert back
-    Restore {
+    /// Former name of `fp`
+    #[command(hide = true)]
+    Discard {
+        #[arg(required_unless_present = "all")]
+        id: Option<String>,
+        #[arg(long, conflicts_with = "id")]
+        all: bool,
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Re-open a closed alert (its verdict is cleared)
+    #[command(visible_alias = "restore")]
+    Reopen {
         id: String,
+    },
+    /// Run the AI filter review now (FP-closed alerts -> AI rules)
+    Review {
+        /// Show the changes without applying nor proposing them
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        json: bool,
     },
     /// Ask the AI to (re)analyze an event
     Analyze {
@@ -173,15 +199,25 @@ fn main() {
         Cmd::Show { id, json } => ctl::show(&cfg, &id, json),
         Cmd::Pin { id } => ctl::set_pin(&cfg, &id, true),
         Cmd::Unpin { id } => ctl::set_pin(&cfg, &id, false),
-        Cmd::Discard {
+        Cmd::Tp { id, reason } => ctl::close(&cfg, &id, "tp", reason.as_deref()),
+        Cmd::Fp {
             id: Some(id),
             reason,
             ..
-        } => ctl::discard(&cfg, &id, reason.as_deref()),
-        Cmd::Discard {
+        }
+        | Cmd::Discard {
+            id: Some(id),
+            reason,
+            ..
+        } => ctl::close(&cfg, &id, "fp", reason.as_deref()),
+        Cmd::Fp {
             id: None, reason, ..
-        } => ctl::discard_all(&cfg, reason.as_deref()),
-        Cmd::Restore { id } => ctl::restore(&cfg, &id),
+        }
+        | Cmd::Discard {
+            id: None, reason, ..
+        } => ctl::close_all_fp(&cfg, reason.as_deref()),
+        Cmd::Reopen { id } => ctl::restore(&cfg, &id),
+        Cmd::Review { dry_run, json } => ai::review::run_cli(&cfg, dry_run, json),
         Cmd::Analyze { id } => ctl::analyze(&cfg, &id),
         Cmd::Explain { id, json } => ctl::explain(&cfg, &id, json),
         Cmd::Filter { cmd } => match cmd {

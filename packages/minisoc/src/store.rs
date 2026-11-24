@@ -1,12 +1,14 @@
 //! Local persistence (SQLite, WAL): event metadata and lifecycle, decision
 //! history, AI analyses and proposals, ingestion offsets. Original logs and
-//! the collector spool are never modified: discarding or filtering only sets
+//! the collector spool are never modified: closing or filtering only sets
 //! flags here.
 //!
 //! States are independent flags, so an event can be e.g. pinned + analyzed:
-//! - active    = not filtered and not discarded (or pinned)
+//! - active    = not filtered and not closed (or pinned)
 //! - pinned    = always visible, never hidden by a rule or an AI decision
-//! - discarded = removed from the active feed by the user or the AI
+//! - closed    = triaged out of the active feed, with a verdict: `tp` (true
+//!   positive: real, handled) or `fp` (false positive: noise). The AI may
+//!   only close as `fp`. Stored in the historical `discarded*` columns.
 //! - filtered  = excluded by a filter rule (`filtered_by` = rule id)
 //! - analyzed  = has an AI analysis
 
@@ -51,12 +53,19 @@ CREATE TABLE IF NOT EXISTS proposals (
   reason TEXT, confidence REAL, decided_at TEXT
 );
 CREATE TABLE IF NOT EXISTS filter_stats (rule_id TEXT PRIMARY KEY, hits INTEGER NOT NULL, last_hit TEXT);
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS offsets (path TEXT PRIMARY KEY, inode INTEGER NOT NULL, offset INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ai_usage (day TEXT PRIMARY KEY, requests INTEGER NOT NULL, errors INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS analysis_requests (event_id TEXT PRIMARY KEY, requested_at TEXT NOT NULL);
 ";
 
 type R<T> = rusqlite::Result<T>;
+
+/// Identity of a rule's definition: any change to it (match, enabled,
+/// description...) restarts the rule's counter.
+pub fn rule_hash(spec: &Value) -> String {
+    crate::util::sha(&[&spec.to_string()], 16)
+}
 
 fn js(s: Option<String>) -> Value {
     s.and_then(|s| serde_json::from_str(&s).ok())
@@ -70,7 +79,36 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn })
+        let s = Self { conn };
+        // Columns added after the first release.
+        s.add_column("events", "verdict", "TEXT")?;
+        s.add_column("filter_stats", "rule_hash", "TEXT")?;
+        s.add_column("filter_stats", "since", "TEXT")?;
+        Ok(s)
+    }
+
+    fn add_column(&self, table: &str, col: &str, ty: &str) -> R<()> {
+        let mut stmt = self.conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let cols: Vec<String> = stmt.query_map([], |r| r.get(1))?.collect::<R<_>>()?;
+        if !cols.iter().any(|c| c == col) {
+            self.conn
+                .execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {ty}"), [])?;
+        }
+        Ok(())
+    }
+
+    pub fn meta_get(&self, key: &str) -> R<Option<String>> {
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+    }
+
+    pub fn meta_set(&self, key: &str, value: &str) -> R<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     /// Changes when another connection (ctl, AI worker) commits.
@@ -196,42 +234,49 @@ impl Store {
         Ok(n > 0)
     }
 
-    /// Discard never deletes anything. Pinned events cannot be discarded by
-    /// the AI (the user can still discard them explicitly).
-    pub fn discard(&self, id: &str, actor: &str, detail: Value) -> R<bool> {
+    /// Close an alert with a verdict (`tp` or `fp`). Nothing is deleted. The
+    /// AI may only close as `fp`, and never a pinned alert (the user can). A
+    /// closed alert can be re-qualified by the user (tp <-> fp).
+    pub fn close(&self, id: &str, verdict: &str, actor: &str, detail: Value) -> R<bool> {
+        if verdict != "tp" && verdict != "fp" || actor != "user" && verdict != "fp" {
+            return Ok(false);
+        }
+        // The user may re-qualify, and confirming an AI closure makes it the
+        // user's (only the user's judgements are filter review evidence).
         let guard = if actor == "user" {
-            ""
+            "(discarded = 0 OR verdict IS NOT ?4 OR discarded_by IS NOT 'user')"
         } else {
-            " AND pinned = 0"
+            "discarded = 0 AND pinned = 0"
         };
         let n = self.conn.execute(
-            &format!("UPDATE events SET discarded = 1, discarded_at = ?2, discarded_by = ?3 WHERE id = ?1 AND discarded = 0{guard}"),
-            params![id, now_iso(), actor],
+            &format!("UPDATE events SET discarded = 1, discarded_at = ?2, discarded_by = ?3, verdict = ?4 WHERE id = ?1 AND {guard}"),
+            params![id, now_iso(), actor, verdict],
         )?;
         if n > 0 {
-            self.history(Some(id), actor, "discard", detail)?;
+            self.history(Some(id), actor, &format!("close_{verdict}"), detail)?;
         }
         Ok(n > 0)
     }
 
-    /// Discard every active alert at once (pinned ones are kept). Each
-    /// alert gets its own history entry and stays restorable.
-    pub fn discard_all(&self, actor: &str, detail: Value) -> R<usize> {
+    /// Close every active alert as false positive (pinned ones are kept).
+    /// Each alert gets its own history entry and stays re-openable.
+    pub fn close_all_fp(&self, actor: &str, detail: Value) -> R<usize> {
         let mut stmt = self.conn.prepare(
             "SELECT id FROM events WHERE discarded = 0 AND filtered_by IS NULL AND pinned = 0",
         )?;
         let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<R<_>>()?;
         let tx = self.conn.unchecked_transaction()?;
         for id in &ids {
-            self.discard(id, actor, detail.clone())?;
+            self.close(id, "fp", actor, detail.clone())?;
         }
         tx.commit()?;
         Ok(ids.len())
     }
 
+    /// Re-open a closed alert (its verdict is cleared).
     pub fn restore(&self, id: &str, actor: &str) -> R<bool> {
         let n = self.conn.execute(
-            "UPDATE events SET discarded = 0, discarded_at = NULL, discarded_by = NULL WHERE id = ?1 AND discarded = 1",
+            "UPDATE events SET discarded = 0, discarded_at = NULL, discarded_by = NULL, verdict = NULL WHERE id = ?1 AND discarded = 1",
             [id],
         )?;
         if n > 0 {
@@ -242,7 +287,7 @@ impl Store {
 
     const COLS: &'static str = "e.id, e.ts, e.source, e.severity, e.event_type, e.message, e.occurrences, e.pinned,
         e.discarded, e.discarded_by, e.filtered_by, e.analyzed, e.fingerprint, e.first_seen, e.last_seen,
-        a.result, a.provider, a.model, e.pinned_at";
+        a.result, a.provider, a.model, e.pinned_at, e.verdict";
 
     fn summary(r: &Row) -> R<Value> {
         let analysis = js(r.get(15)?);
@@ -255,18 +300,27 @@ impl Store {
                 "provider": r.get::<_, Option<String>>(16)?, "model": r.get::<_, Option<String>>(17)?,
             })
         };
+        let closed = r.get::<_, bool>(8)?;
+        let closed_by = r.get::<_, Option<String>>(9)?;
+        // Closures from before verdicts existed were "discards": noise.
+        let verdict = r
+            .get::<_, Option<String>>(19)?
+            .or_else(|| closed.then(|| "fp".to_string()));
         Ok(json!({
             "id": r.get::<_, String>(0)?, "timestamp": r.get::<_, String>(1)?, "source": r.get::<_, String>(2)?,
             "severity": r.get::<_, String>(3)?, "event_type": r.get::<_, String>(4)?, "message": r.get::<_, String>(5)?,
-            "occurrences": r.get::<_, i64>(6)?, "pinned": r.get::<_, bool>(7)?, "discarded": r.get::<_, bool>(8)?,
-            "discarded_by": r.get::<_, Option<String>>(9)?, "filtered_by": r.get::<_, Option<String>>(10)?,
+            "occurrences": r.get::<_, i64>(6)?, "pinned": r.get::<_, bool>(7)?,
+            "closed": closed, "closed_by": closed_by, "verdict": verdict,
+            // Former names, kept for scripts written against them.
+            "discarded": closed, "discarded_by": closed_by,
+            "filtered_by": r.get::<_, Option<String>>(10)?,
             "analyzed": r.get::<_, bool>(11)?, "fingerprint": r.get::<_, String>(12)?,
             "first_seen": r.get::<_, String>(13)?, "last_seen": r.get::<_, String>(14)?, "analysis": a,
             "pinned_at": r.get::<_, Option<String>>(18)?,
         }))
     }
 
-    /// state: active | pinned | discarded | filtered | analyzed | all
+    /// state: active | pinned | closed (alias discarded) | tp | fp | filtered | analyzed | all
     pub fn list(&self, state: &str, limit: usize) -> R<Vec<Value>> {
         let (cond, order) = match state {
             "pinned" => ("e.pinned = 1 AND e.discarded = 0", "e.pinned_at DESC"),
@@ -274,7 +328,12 @@ impl Store {
                 "e.pinned = 0 AND e.discarded = 0 AND e.filtered_by IS NULL",
                 "e.ts DESC",
             ),
-            "discarded" => ("e.discarded = 1", "e.discarded_at DESC"),
+            "closed" | "discarded" => ("e.discarded = 1", "e.discarded_at DESC"),
+            "tp" => ("e.discarded = 1 AND e.verdict = 'tp'", "e.discarded_at DESC"),
+            "fp" => (
+                "e.discarded = 1 AND COALESCE(e.verdict, 'fp') = 'fp'",
+                "e.discarded_at DESC",
+            ),
             "filtered" => ("e.filtered_by IS NOT NULL", "e.ts DESC"),
             "analyzed" => ("e.analyzed = 1", "e.ts DESC"),
             _ => ("1", "e.ts DESC"),
@@ -305,6 +364,11 @@ impl Store {
             "active_by_severity": by_sev,
             "active": q("SELECT COUNT(*) FROM events WHERE discarded = 0 AND (filtered_by IS NULL OR pinned = 1)")?,
             "pinned": q("SELECT COUNT(*) FROM events WHERE pinned = 1")?,
+            "closed": q("SELECT COUNT(*) FROM events WHERE discarded = 1")?,
+            "closed_tp": q("SELECT COUNT(*) FROM events WHERE discarded = 1 AND verdict = 'tp'")?,
+            "closed_fp": q("SELECT COUNT(*) FROM events WHERE discarded = 1 AND COALESCE(verdict, 'fp') = 'fp'")?,
+            "closed_by_ai": q("SELECT COUNT(*) FROM events WHERE discarded = 1 AND discarded_by = 'ai'")?,
+            // Former names.
             "discarded": q("SELECT COUNT(*) FROM events WHERE discarded = 1")?,
             "discarded_by_ai": q("SELECT COUNT(*) FROM events WHERE discarded = 1 AND discarded_by = 'ai'")?,
             "filtered": q("SELECT COUNT(*) FROM events WHERE filtered_by IS NOT NULL AND pinned = 0")?,
@@ -313,22 +377,113 @@ impl Store {
         }))
     }
 
+    /// Per rule: `hits` = alerts it excluded since the rule was last created
+    /// or modified (`since`), `last_hit`, and `hidden` = stored alerts it
+    /// currently hides.
     pub fn filter_stats(&self) -> R<Value> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT rule_id, hits, last_hit FROM filter_stats")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT f.rule_id, f.hits, f.last_hit, f.since,
+               (SELECT COUNT(*) FROM events e WHERE e.filtered_by = f.rule_id AND e.pinned = 0)
+             FROM filter_stats f",
+        )?;
         let mut m = serde_json::Map::new();
         for row in stmt.query_map([], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, i64>(4)?,
             ))
         })? {
-            let (id, hits, last) = row?;
-            m.insert(id, json!({"hits": hits, "last_hit": last}));
+            let (id, hits, last, since, hidden) = row?;
+            m.insert(
+                id,
+                json!({"hits": hits, "last_hit": last, "since": since, "hidden": hidden}),
+            );
         }
         Ok(Value::Object(m))
+    }
+
+    /// Align the counters with the effective rules: a new rule, or a rule
+    /// whose definition changed, starts again from 0; removed rules are
+    /// forgotten. Returns the ids whose counter was reset.
+    pub fn sync_rule_stats(&self, rules: &RuleSet) -> R<Vec<String>> {
+        let now = now_iso();
+        let mut reset = vec![];
+        let tx = self.conn.unchecked_transaction()?;
+        for r in &rules.rules {
+            let hash = rule_hash(&r.spec);
+            let known: Option<Option<String>> = tx
+                .query_row(
+                    "SELECT rule_hash FROM filter_stats WHERE rule_id = ?1",
+                    [&r.id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if known.as_ref().and_then(|h| h.as_deref()) != Some(hash.as_str()) {
+                tx.execute(
+                    "INSERT INTO filter_stats(rule_id, hits, last_hit, rule_hash, since) VALUES (?1, 0, NULL, ?2, ?3)
+                     ON CONFLICT(rule_id) DO UPDATE SET hits = 0, last_hit = NULL, rule_hash = ?2, since = ?3",
+                    params![r.id, hash, now],
+                )?;
+                reset.push(r.id.clone());
+            }
+        }
+        let ids: Vec<String> = rules.rules.iter().map(|r| r.id.clone()).collect();
+        let mut stmt = tx.prepare("SELECT rule_id FROM filter_stats")?;
+        let stale: Vec<String> = stmt
+            .query_map([], |r| r.get(0))?
+            .collect::<R<Vec<String>>>()?
+            .into_iter()
+            .filter(|id| !ids.contains(id))
+            .collect();
+        drop(stmt);
+        for id in stale {
+            tx.execute("DELETE FROM filter_stats WHERE rule_id = ?1", [id])?;
+        }
+        tx.commit()?;
+        Ok(reset)
+    }
+
+    /// Closed alerts with a given verdict (`fp` includes pre-verdict
+    /// closures), newest first. `by_user`: only the user's own judgements
+    /// (the AI never learns from its own closures).
+    pub fn closed_events(
+        &self,
+        verdict: &str,
+        by_user: bool,
+        since: &str,
+        limit: usize,
+    ) -> R<Vec<Event>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM events WHERE discarded = 1 AND COALESCE(verdict, 'fp') = ?1
+               AND (?2 = 0 OR discarded_by = 'user') AND discarded_at >= ?3
+             ORDER BY discarded_at DESC LIMIT ?4",
+        )?;
+        let ids: Vec<String> = stmt
+            .query_map(params![verdict, by_user, since, limit as i64], |r| r.get(0))?
+            .collect::<R<_>>()?;
+        Ok(ids
+            .iter()
+            .filter_map(|i| self.event(i).ok().flatten())
+            .collect())
+    }
+
+    /// Recent events with their protection status, for checking what a
+    /// candidate rule would hide: (event, pinned, verdict).
+    pub fn recent_with_verdict(&self, limit: usize) -> R<Vec<(Event, bool, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, pinned, CASE WHEN discarded = 1 THEN COALESCE(verdict, 'fp') END
+             FROM events ORDER BY ts DESC LIMIT ?1",
+        )?;
+        let rows: Vec<(String, bool, Option<String>)> = stmt
+            .query_map([limit as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<R<_>>()?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(i, p, v)| self.event(&i).ok().flatten().map(|e| (e, p, v)))
+            .collect())
     }
 
     /// Full record for the details view.
@@ -338,9 +493,9 @@ impl Store {
             [id],
             |r| {
                 let mut v = Self::summary(r)?;
-                v["fields"] = js(r.get(19)?);
-                v["raw"] = json!(r.get::<_, String>(20)?);
-                v["meta"] = js(r.get(21)?);
+                v["fields"] = js(r.get(20)?);
+                v["raw"] = json!(r.get::<_, String>(21)?);
+                v["meta"] = js(r.get(22)?);
                 Ok(v)
             },
         ).optional()?;
@@ -691,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn pin_discard_restore_lifecycle_persists() {
+    fn pin_close_reopen_lifecycle_persists() {
         let d = std::env::temp_dir().join(format!("minisoc-life-{}", rand_suffix()));
         std::fs::create_dir_all(&d).unwrap();
         let db = d.join("db.sqlite3");
@@ -704,12 +859,20 @@ mod tests {
         // Reopen: pin survives a restart.
         let s = Store::open(&db).unwrap();
         assert_eq!(s.list("pinned", 10).unwrap().len(), 1);
-        // AI cannot discard a pinned alert, the user can.
-        assert!(!s.discard(&e.id, "ai", json!({})).unwrap());
-        assert!(s.discard(&e.id, "user", json!({"reason": "seen"})).unwrap());
-        assert_eq!(s.list("discarded", 10).unwrap().len(), 1);
+        // AI cannot close a pinned alert, nor ever as TP; the user can.
+        assert!(!s.close(&e.id, "fp", "ai", json!({})).unwrap());
+        assert!(!s.close(&e.id, "tp", "ai", json!({})).unwrap());
+        assert!(s.close(&e.id, "fp", "user", json!({"reason": "seen"})).unwrap());
+        assert_eq!(s.list("fp", 10).unwrap().len(), 1);
+        // Re-qualified by the user: FP -> TP.
+        assert!(s.close(&e.id, "tp", "user", json!({})).unwrap());
+        assert!(!s.close(&e.id, "tp", "user", json!({})).unwrap(), "same verdict: no-op");
+        let tp = s.list("tp", 10).unwrap();
+        assert_eq!((tp.len(), tp[0]["verdict"].as_str()), (1, Some("tp")));
+        assert_eq!(s.list("fp", 10).unwrap().len(), 0);
         assert!(s.restore(&e.id, "user").unwrap());
-        assert_eq!(s.list("discarded", 10).unwrap().len(), 0);
+        assert_eq!(s.list("closed", 10).unwrap().len(), 0);
+        assert!(s.list("pinned", 10).unwrap()[0]["verdict"].is_null());
         let full = s.get(&e.id).unwrap().unwrap();
         let actions: Vec<&str> = full["history"]
             .as_array()
@@ -717,7 +880,7 @@ mod tests {
             .iter()
             .map(|h| h["action"].as_str().unwrap())
             .collect();
-        assert_eq!(actions, ["pin", "discard", "restore"]);
+        assert_eq!(actions, ["pin", "close_fp", "close_tp", "restore"]);
     }
 
     #[test]
@@ -749,7 +912,7 @@ mod tests {
     }
 
     #[test]
-    fn discard_all_keeps_pinned_and_is_restorable() {
+    fn close_all_fp_keeps_pinned_and_is_reopenable() {
         let s = mem();
         let evs: Vec<Event> = (0..4)
             .map(|i| event("a", "medium", &format!("bulk{i}")))
@@ -758,12 +921,60 @@ mod tests {
             s.upsert(e, None).unwrap();
         }
         s.set_pinned(&evs[0].id, true, "user").unwrap();
-        assert_eq!(s.discard_all("user", json!({"bulk": true})).unwrap(), 3);
+        assert_eq!(s.close_all_fp("user", json!({"bulk": true})).unwrap(), 3);
+        assert_eq!(s.counts().unwrap()["closed_fp"], 3);
         assert_eq!(s.list("active", 10).unwrap().len(), 0);
         assert_eq!(s.list("pinned", 10).unwrap().len(), 1, "pinned kept");
         assert_eq!(s.counts().unwrap()["active"], 1);
         assert!(s.restore(&evs[1].id, "user").unwrap());
         assert_eq!(s.list("active", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn rule_counters_restart_when_the_rule_changes() {
+        let s = mem();
+        let rs = |m: &str| RuleSet {
+            rules: parse_document(&format!("version: 1\nfilters:\n  - id: r\n    match: {m}\n"), "t")
+                .unwrap(),
+        };
+        let v1 = rs("{source: snort}");
+        assert_eq!(s.sync_rule_stats(&v1).unwrap(), ["r"], "new rule");
+        s.upsert(&event("snort", "low", "a"), Some("r")).unwrap();
+        s.upsert(&event("snort", "low", "b"), Some("r")).unwrap();
+        assert!(s.sync_rule_stats(&v1).unwrap().is_empty(), "unchanged");
+        let st = s.filter_stats().unwrap();
+        assert_eq!((st["r"]["hits"].as_i64(), st["r"]["hidden"].as_i64()), (Some(2), Some(2)));
+        let since = st["r"]["since"].clone();
+        assert!(since.is_string());
+        // Modified definition: the counter starts again.
+        assert_eq!(s.sync_rule_stats(&rs("{source: suricata}")).unwrap(), ["r"]);
+        assert_eq!(s.filter_stats().unwrap()["r"]["hits"], 0);
+        // Removed rule: forgotten.
+        s.sync_rule_stats(&RuleSet::default()).unwrap();
+        assert!(s.filter_stats().unwrap().get("r").is_none());
+    }
+
+    #[test]
+    fn closed_events_learning_set_is_the_users() {
+        let s = mem();
+        let a = event("a", "low", "user fp");
+        let b = event("a", "low", "ai fp");
+        let c = event("a", "low", "user tp");
+        for e in [&a, &b, &c] {
+            s.upsert(e, None).unwrap();
+        }
+        s.close(&a.id, "fp", "user", json!({})).unwrap();
+        s.close(&b.id, "fp", "ai", json!({})).unwrap();
+        s.close(&c.id, "tp", "user", json!({})).unwrap();
+        let fp = s.closed_events("fp", true, "2000", 10).unwrap();
+        assert_eq!(fp.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), [a.id.as_str()]);
+        assert_eq!(s.closed_events("fp", false, "2000", 10).unwrap().len(), 2);
+        assert_eq!(s.closed_events("tp", true, "2000", 10).unwrap()[0].id, c.id);
+        // The user confirming an AI closure makes it evidence.
+        assert!(s.close(&b.id, "fp", "user", json!({})).unwrap());
+        assert_eq!(s.closed_events("fp", true, "2000", 10).unwrap().len(), 2);
+        let rv = s.recent_with_verdict(10).unwrap();
+        assert!(rv.iter().any(|(e, _, v)| e.id == c.id && v.as_deref() == Some("tp")));
     }
 
     #[test]

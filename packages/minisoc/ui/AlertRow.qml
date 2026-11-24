@@ -7,7 +7,7 @@ Rectangle {
     property var theme
     property var ev: ({})
     property bool selected: false
-    property string mode: "feed" // feed | discarded | filtered
+    property string mode: "feed" // feed | closed | filtered
     signal action(string name, string id)
 
     readonly property color sevColor: theme.sev(ev.severity)
@@ -93,10 +93,12 @@ Rectangle {
         }
 
         Text {
-            visible: row.mode === "discarded" || row.mode === "filtered"
+            visible: row.mode === "closed" || row.mode === "filtered"
             Layout.fillWidth: true
-            text: row.mode === "discarded" ? "discarded by " + (row.ev.discarded_by || "?") : "rule: " + (row.ev.filtered_by || "")
-            color: row.ev.discarded_by === "ai" ? row.theme.ai : row.theme.muted
+            text: row.mode === "closed"
+                  ? "closed as " + (row.ev.verdict === "tp" ? "TRUE POSITIVE" : "FALSE POSITIVE") + " by " + (row.ev.closed_by || "?")
+                  : "rule: " + (row.ev.filtered_by || "")
+            color: row.ev.closed_by === "ai" ? row.theme.ai : row.ev.verdict === "tp" ? row.theme.high : row.theme.muted
             font.family: row.theme.mono; font.pixelSize: row.theme.fontSize - 3
             elide: Text.ElideRight
         }
@@ -110,10 +112,16 @@ Rectangle {
                   onClicked: row.action(row.ev.pinned ? "unpin" : "pin", row.ev.id) }
             Btn { theme: row.theme; label: "DETAILS"; active: row.selected
                   onClicked: row.action("details", row.ev.id) }
-            Btn { theme: row.theme; label: "DISCARD"; visible: row.mode === "feed" && !row.ev.discarded
-                  onClicked: row.action("discard", row.ev.id) }
-            Btn { theme: row.theme; label: "RESTORE"; visible: row.mode === "discarded"; tint: row.theme.accent
-                  onClicked: row.action("restore", row.ev.id) }
+            // Close with a verdict: TP = real, handled; FP = noise (the AI
+            // filter review learns from FP closures).
+            Btn { theme: row.theme; label: "TP"; tint: row.theme.high; visible: row.mode === "feed" && !row.ev.closed
+                  onClicked: row.action("tp", row.ev.id) }
+            Btn { theme: row.theme; label: "FP"; visible: row.mode === "feed" && !row.ev.closed
+                  onClicked: row.action("fp", row.ev.id) }
+            Btn { theme: row.theme; label: row.ev.verdict === "tp" ? "MARK FP" : "MARK TP"; visible: row.mode === "closed"
+                  onClicked: row.action(row.ev.verdict === "tp" ? "fp" : "tp", row.ev.id) }
+            Btn { theme: row.theme; label: "REOPEN"; visible: row.mode === "closed"; tint: row.theme.accent
+                  onClicked: row.action("reopen", row.ev.id) }
             Btn { theme: row.theme; label: "FILTER"; visible: row.mode === "feed"
                   onClicked: row.action("filter", row.ev.id) }
             Btn { theme: row.theme; label: "AI"; tint: row.theme.ai

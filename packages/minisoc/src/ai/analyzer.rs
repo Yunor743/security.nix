@@ -339,11 +339,11 @@ fn apply_discard_policy(cfg: &Config, store: &Store, id: &str, analysis: &Value)
             }
         }
         Decision::Discard(reasons) => {
-            if let Ok(true) = store.discard(&e.id, "ai", json!({
+            if let Ok(true) = store.close(&e.id, "fp", "ai", json!({
                 "reasons": reasons, "summary": analysis["summary"], "benign_confidence": analysis["benign_confidence"],
                 "model": cfg.ai.model,
             })) {
-                info!("AI auto-discarded {} ({})", e.id, e.severity);
+                info!("AI closed {} ({}) as false positive", e.id, e.severity);
             }
         }
     }
@@ -463,9 +463,9 @@ fn maybe_auto_filter(
             info!("AI filter proposal rejected by policy: {why}");
         }
         Ok(rule) if af.mode == "automatic" => {
-            let backup = af.backup_before_write.then(|| cfg.backup_dir());
+            let backup = af.backup_before_write.then(|| cfg.ai_backup_dir());
             match crate::filters::append_rule(
-                &cfg.user_filter_file(),
+                &cfg.ai_filter_file(),
                 &rule,
                 backup.as_deref(),
                 cfg.filter.max_backups,
@@ -598,7 +598,8 @@ mod tests {
             true,
             "low + benign => auto-discarded"
         );
-        assert_eq!(get(&low.id)["discarded_by"], "ai");
+        assert_eq!(get(&low.id)["closed_by"], "ai");
+        assert_eq!(get(&low.id)["verdict"], "fp", "the AI closes as false positive only");
         assert_eq!(get(&crit.id)["analyzed"], true);
         assert_eq!(
             get(&crit.id)["discarded"],
@@ -610,7 +611,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|h| h["actor"] == "ai" && h["action"] == "discard"));
+            .any(|h| h["actor"] == "ai" && h["action"] == "close_fp"));
         // Restorable.
         assert!(store.restore(&low.id, "user").unwrap());
         a.stop();

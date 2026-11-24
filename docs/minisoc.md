@@ -4,9 +4,12 @@ A personal, local Security Operations Center for a NixOS workstation. MiniSOC
 collects the alerts of the security tools installed on the machine (Rustinel
 today, any log file you declare), normalizes them into one format, filters
 the noise with an external rules file, keeps a lifecycle per alert (pin,
-discard, restore, filter) and shows them in a Quickshell desktop widget.
-An LLM can optionally add a SOC level 1 analysis and propose (or, within
-strict limits, apply) discards and exclusion rules.
+close as true positive / false positive, re-open, filter) and shows them in
+a Quickshell desktop widget. An LLM can optionally add a SOC level 1
+analysis, propose (or, within strict limits, apply) FP closures and
+exclusion rules, and periodically **review its own rules from the alerts you
+closed as FP**: the noise shrinks as you use the machine, relevant alerts
+keep coming.
 
 MiniSOC works entirely without an LLM and without any remote service.
 
@@ -17,9 +20,9 @@ MiniSOC works entirely without an LLM and without any remote service.
 - [Normalized event format](#normalized-event-format)
 - [alert_filter.yaml](#alert_filteryaml)
 - [Permissions and data locations](#permissions-and-data-locations)
-- [The widget: pin / details / discard](#the-widget)
+- [The widget: pin / details / TP / FP](#the-widget)
 - [Command line](#command-line)
-- [AI analysis](#ai-analysis) — [providers](#providers), [secrets](#secrets), [prompts](#prompts), [auto-discard](#auto-discard), [auto-filter](#auto-filter), [privacy](#privacy)
+- [AI analysis](#ai-analysis) — [providers](#providers), [secrets](#secrets), [prompts](#prompts), [auto-close as FP](#auto-close-as-fp), [auto-filter](#auto-filter), [filter review](#filter-review), [privacy](#privacy)
 - [Complete example](#complete-example)
 - [Troubleshooting](#troubleshooting)
 - [Status and limits](#status-and-limits)
@@ -343,12 +346,26 @@ matched. `services.minisoc.filter.debug = true` logs this for every event
   Nix store: keep sensitive values in the user file.
 - Home Manager: `programs.minisoc.filter.initialRules` seeds the user file
   once.
-- Every automated write (Create filter, AI rule, accepted proposal,
-  rollback) is atomic (temp file + fsync + rename, mode 0600), preceded by a
-  backup in `~/.local/state/minisoc/filter-backups/` (last 20), and only
-  appends: other rules and comments are preserved. A write is refused if the
-  current file is invalid. `minisoc filter rollback` restores the latest
-  backup.
+- AI file: `~/.config/minisoc/ai_filters.yaml` (`services.minisoc.filter.aiFile`),
+  the rules **owned by the AI** (auto-filter, accepted AI proposals, filter
+  review). The AI never writes your file; you may edit this one, the next
+  review starts from what is there. It is rewritten by MiniSOC (comments
+  are not kept).
+- Every automated write is atomic (temp file + fsync + rename, mode 0600)
+  and validated first; a write is refused if the current file is invalid.
+  Writes to your file (Create filter, rollback) only append: your other
+  rules and comments are preserved; backups in
+  `~/.local/state/minisoc/filter-backups/` (last 20), `minisoc filter
+  rollback` restores the latest. The AI file is backed up in
+  `filter-backups/ai/` before each rewrite.
+
+**Counters.** Every rule shows how many alerts it excluded **since it was
+created or last modified** (`hits`, `since`), plus the stored alerts it hides
+now (`hidden`): in *Manage ▸ Rules*, `minisoc filter list` and
+`state.json`. Any change to a rule's definition (match, enabled,
+description…) restarts its counter at 0, so a rule that stops catching
+anything after a change is visible at once. The filter review uses these
+counters to retire useless AI rules.
 
 ## Permissions and data locations
 
@@ -359,6 +376,7 @@ matched. `services.minisoc.filter.debug = true` logs this for every event
 | `/var/lib/minisoc-collector/data` | minisoc-collector, 0700 | Vector checkpoints |
 | `/var/lib/minisoc-collector/spool` | minisoc-collector:minisoc, 0750 | parsed events, 0640, aged out after `spoolRetention` |
 | `~/.config/minisoc/alert_filter.yaml` | user, 0600 (dir 0700) | user rules |
+| `~/.config/minisoc/ai_filters.yaml` | user, 0600 | rules owned by the AI |
 | `~/.config/minisoc/prompts/*.md` | user | runtime prompt overrides |
 | `~/.local/state/minisoc/` | user, 0700 | SQLite store, backups, last-good rules, inbox |
 | `$XDG_RUNTIME_DIR/minisoc/state.json` | user, 0600 | snapshot for the UI |
@@ -378,8 +396,10 @@ alert is active, grey when the engine is offline), AI state and provider
 (`LOCAL` / `REMOTE`), counters per severity, **Pinned** zone, latest alerts,
 and the management panel (▼).
 
-Each alert: **PIN/UNPIN**, **DETAILS**, **DISCARD** (or **RESTORE**),
-**FILTER** (create a rule from this alert), **AI** (analyze / re-analyze).
+Each alert: **PIN/UNPIN**, **DETAILS**, **TP** / **FP** (close with a
+verdict), **FILTER** (create a rule from this alert), **AI** (analyze /
+re-analyze). Above the feed, **close all as FP** (two clicks) closes every
+active alert as false positive; pinned alerts are kept.
 
 - **Pin**: the alert moves to the Pinned zone at the top, gets an accent
   frame, survives restarts, is never hidden by a rule and never touched by
@@ -391,18 +411,28 @@ Each alert: **PIN/UNPIN**, **DETAILS**, **DISCARD** (or **RESTORE**),
   separate violet frame labelled with provider/model and a confidence bar,
   AI proposals, and the decision history. Close (or click the alert again)
   to go back to the compact view.
-- **Discard**: removes the alert from the active feed and records who did it
-  and why. It never modifies logs and **never creates a rule**: discarded
-  alerts are listed in *Manage ▸ Discarded* and can be restored.
+- **TP (true positive)**: the alert was real (relevant activity, handled).
+  It leaves the feed; the AI will **never** write a rule hiding it or its
+  pattern.
+- **FP (false positive)**: the alert was noise. It leaves the feed and
+  becomes evidence for the [filter review](#filter-review): several FP
+  closures with the same cause (same executable, file, profile…) lead the AI
+  to a rule. One FP closure alone never does.
+- Closing never modifies logs and **never creates a rule by itself**.
+  Closed alerts are listed in *Manage ▸ Closed* with their verdict and who
+  closed them; they can be re-qualified (**MARK TP** / **MARK FP**) or
+  re-opened (**REOPEN**). Alerts closed before verdicts existed count as FP.
 - **Create filter**: shows the rule that would be added (source +
   event_type + exact message), then appends it after confirmation. From the
   CLI you can add fields: `minisoc filter create <id> --field
   process.executable --no-message`.
 
-Management panel: discarded alerts (restore), filtered alerts, rules with
-hit counters and file status (open the file, roll back the last change),
-pending AI proposals (accept / reject), AI status and statistics, and prompt
-editing.
+Management panel: closed alerts (TP / FP counts, re-qualify, re-open),
+filtered alerts, rules with their owner (system / user / AI) and their
+counter since their last change, file status (open your file or the AI
+file, roll back the last change), pending AI proposals (accept / reject,
+filter review changes included), AI status and statistics (with the last and
+next filter review and its summary), and prompt editing.
 
 Profiles: `compact` (360 px, 5 alerts), `desktop` (440 px, 10 alerts +
 statistics), `analyst` (520 px, 20 alerts, management panel open, wide
@@ -412,22 +442,26 @@ details). Everything can be overridden: `width`, `detailsWidth`,
 
 Desktop notifications: the widget sends a `notify-send` for every new
 visible alert (icon and urgency follow the severity, `critical` stays
-until dismissed). Alerts that are already discarded or filtered never
+until dismissed). Alerts that are already closed or filtered never
 notify, and nothing fires on widget startup for pre-existing alerts.
 `ui.notify.enable` (default `true`) turns it off;
 `ui.notify.minimumSeverity` (default `low`) raises the floor (`medium`,
 `high`, `critical`).
 
 IPC (keybindings, scripts): `minisoc-ui-ipc call minisoc toggleManage`,
-`details <id>`, `close`, `setProfile analyst`.
+`details <id>`, `close`, `tp <id>`, `fp <id>`, `closeAllFp`,
+`setProfile analyst`.
 
 ## Command line
 
 ```
 minisoc status                      engine, rules files, AI status
-minisoc list [--state active|pinned|discarded|filtered|analyzed|all] [--json]
+minisoc list [--state active|pinned|closed|tp|fp|filtered|analyzed|all] [--json]
 minisoc show <id> [--json]          everything about one alert
-minisoc pin|unpin|discard|restore <id>
+minisoc pin|unpin <id>
+minisoc tp <id> | fp <id> | fp --all   close as true / false positive (all: every active alert)
+minisoc reopen <id>                 re-open a closed alert (`restore`; `discard` = `fp`)
+minisoc review [--dry-run] [--json] run the AI filter review now (dry run: show, change nothing)
 minisoc explain <id>                why rules keep / exclude it
 minisoc analyze <id>                request an AI analysis
 minisoc filter validate [FILE] | list | draft <id> | create <id> | backups | rollback [--to FILE]
@@ -526,7 +560,11 @@ inside the data is escaped): alert content is untrusted data, never
 instructions. The model cannot change its guardrails: every automatic
 decision is enforced in code from the Nix configuration, which it never sees.
 
-### Auto-discard
+### Auto-close as FP
+
+The options keep their former name (`autoDiscard`): the AI closes benign
+alerts as **false positive**, never as TP. These AI closures are never used
+as evidence by the filter review (the AI does not learn from itself).
 
 ```nix
 services.minisoc.ai.analysis = {
@@ -541,15 +579,15 @@ services.minisoc.ai.analysis = {
 };
 ```
 
-An alert is discarded (automatic) or proposed (suggest) only if **all** of:
+An alert is closed as FP (automatic) or proposed (suggest) only if **all** of:
 not critical (hard rule), not `unknown`, severity ≤ `maximumSeverity`
-(default `low`, so high is never auto-discarded unless configured), not
+(default `low`, so high is never closed by the AI unless configured), not
 pinned (hard rule), suggested action `discard`, classification not
 malicious/suspicious/reconnaissance/unknown, false-positive likelihood
 `high`, `benign_confidence` ≥ threshold, and (by default) the pattern seen
 ≥ `minimumOccurrences` times with at least two benign analyses. Every AI
-discard is recorded with its justification, visible in *Discarded* with
-`discarded by ai`, and restorable.
+closure is recorded with its justification, visible in *Closed* as
+`closed as FALSE POSITIVE by ai`, and re-openable.
 
 ### Auto-filter
 
@@ -577,8 +615,9 @@ pattern, no pinned alert and nothing high/critical. MiniSOC then **injects
 (critical and high are always protected), so the rule can never hide them.
 
 `suggest`: the rule waits in *Manage ▸ AI proposals*. `automatic`: it is
-appended to the user rules file (backup, atomic write, existing rules never
-changed or widened). AI rules carry their provenance:
+appended to the AI rules file `ai_filters.yaml` (backup, atomic write,
+existing rules never changed or widened); your own file is never written by
+the AI. AI rules carry their provenance:
 
 ```yaml
 metadata:
@@ -592,8 +631,73 @@ metadata:
   source_event: evt-…
 ```
 
-Rejected proposals are kept (status `invalid`) with the reason. Roll back
-with `minisoc filter rollback`.
+Rejected proposals are kept (status `invalid`) with the reason.
+
+### Filter review
+
+A scheduled pass where the AI re-examines **its whole rule list** against
+what you did with the alerts, so the feed improves empirically as you use
+the workstation.
+
+```nix
+services.minisoc.ai.filterReview = {
+  enable = true;
+  mode = "suggest";           # or "automatic" (rewrites ai_filters.yaml)
+  interval = 24;              # hours; `minisoc review` runs one now
+  lookbackDays = 30;          # closures taken into account
+  minimumFalsePositives = 3;  # FP closures a rule must cover
+  minimumRuleAge = 72;        # hours before a rule may be changed / deleted
+  lowHitsThreshold = 2;       # a rule excluding <= this since its last change may go
+  maxChanges = 5;             # per review
+  minimumConfidence = 0.7;
+};
+```
+
+**What the model receives** (redacted like any AI request): the alerts you
+closed as FP in the look-back window, grouped by similar pattern with their
+count; the alerts you closed as TP (counter-examples); the AI rules with
+their counter since their last change and how many FP/TP closures each
+matches; your rules and the system rules as read-only context. Only *your*
+closures count: AI closures are never evidence.
+
+**What it answers**: a summary and a list of changes on the AI file:
+`create` (e.g. several fapolicyd or AppArmor denials closed as FP on the same
+executable or profile → one rule on that executable), `update` (widen a rule
+to new FP closures of the same cause, or narrow it), `delete` (a rule that
+excludes almost nothing since its last change: the noise it targeted is
+gone). The prompt is `review` (`minisoc prompts edit review`).
+
+**Guardrails, enforced in code before anything is written:**
+
+- Only rules of the AI file are created, modified or deleted. Your rules and
+  the system rules are never touched.
+- A created/updated rule names an exact `source` and `event_type` plus a
+  specific `message`/`fields` condition (same matcher limits as auto-filter);
+  MiniSOC injects the severity protection (critical/high never hidden).
+- It must cover at least `minimumFalsePositives` alerts **you** closed as FP,
+  and among recent alerts it may hide nothing else: no pinned alert, no alert
+  closed as TP, no high/critical alert, no alert of a pattern you never
+  closed as FP (too broad), no duplicate of an existing rule.
+- A rule changed less than `minimumRuleAge` hours ago is left alone (its
+  counter needs time). A rule is deleted only when it excluded at most
+  `lowHitsThreshold` alerts since its last change, or — at once — when it
+  would hide an alert closed as TP.
+- At most `maxChanges` changes per review, each with `confidence` ≥
+  `minimumConfidence`. Rejected changes are listed with the reason.
+- `suggest`: changes wait in *Manage ▸ AI proposals* (re-checked against the
+  current state when you accept; a refused change is never proposed again).
+  `automatic`: one validated, backed-up rewrite of `ai_filters.yaml`; the
+  engine hot-reloads it and the new rules' counters start at 0.
+- No request when nothing changed since the last review (same closures, same
+  rules and counters), and none at all while there is neither an FP closure
+  nor an AI rule. Reviews count in the daily quota.
+
+Check it with `minisoc review --dry-run` (shows what the model would change
+and what the guardrails refuse, writes nothing), the history
+(`filter_review_create|update|delete`), and *Manage ▸ AI* (last/next run,
+summary, applied/proposed/rejected counts, last error). Undo an applied
+change by editing `ai_filters.yaml` or restoring a backup from
+`~/.local/state/minisoc/filter-backups/ai/`.
 
 ### Privacy
 
@@ -643,6 +747,7 @@ Ollama analysis in suggest mode + Home Manager widget):
         autoDiscard = true;                     # suggest mode by default
       };
       autoFilter.enable = true;                 # suggest mode by default
+      filterReview.enable = true;               # daily, suggest mode by default
     };
   };
 
@@ -667,7 +772,12 @@ Ollama analysis in suggest mode + Home Manager widget):
   within `ignoreOlderThan`. Test the engine alone with
   `echo '{"severity":"high","message":"test"}' | minisoc ingest --source test`.
 - **An alert disappeared**: `minisoc list --state all`, then `minisoc
-  explain <id>` (rule) or `minisoc show <id>` (history: who discarded it).
+  explain <id>` (rule, and whether it is an AI rule) or `minisoc show <id>`
+  (history: who closed it, with which verdict).
+- **The AI review hides something it should not**: close one of those
+  alerts as TP — the next review must then delete or narrow the rule (a rule
+  hiding a TP may be removed at once), and no new rule may hide it. Or remove
+  the rule from `ai_filters.yaml` yourself.
 - **Rules not applied**: `minisoc filter validate` — an invalid file keeps
   its previous version in force; `minisoc status` shows the error.
 - **AI**: *Manage ▸ AI* or `minisoc status` (`last_error`, quota);

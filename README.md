@@ -446,12 +446,16 @@ A personal, local SOC: Vector collects and parses the alerts of the machine
 (Rustinel by default, any log file you declare), a Rust engine running as a
 systemd user service normalizes, de-duplicates and filters them with
 `~/.config/minisoc/alert_filter.yaml` (strict validation, hot reload, last
-valid version kept), stores their lifecycle (pin / discard / restore /
-filtered / analyzed) and a Quickshell widget shows them. An LLM (Ollama,
-OpenAI, Anthropic, Gemini, OpenRouter, OpenAI-compatible, custom) can optionally add a
-SOC N1 analysis and propose discards or exclusion rules under code-enforced
-guardrails (critical never auto-discarded, critical/high never filtered by
-the AI, pinned alerts untouchable, remote providers opt-in).
+valid version kept), stores their lifecycle (pin / close as true or false
+positive / re-open / filtered / analyzed, with a counter per rule since its
+last change) and a Quickshell widget shows them. An LLM (Ollama, OpenAI,
+Anthropic, Gemini, OpenRouter, OpenAI-compatible, custom) can optionally add
+a SOC N1 analysis, close benign alerts as FP, and, on a schedule, review its
+own exclusion rules from the alerts you closed as FP (and TP), so the noise
+goes down as you use the machine. Code-enforced guardrails: critical never
+closed by the AI, critical/high never filtered by it, nothing you closed as
+TP or pinned ever hidden, your own rules never touched, remote providers
+opt-in.
 
 ```nix
 services.rustinel.enable = true;

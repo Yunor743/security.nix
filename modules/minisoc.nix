@@ -164,6 +164,7 @@ let
     "enrichment"
     "classification"
     "filter"
+    "review"
   ];
 
   promptPath =
@@ -237,7 +238,8 @@ let
       system_files = lib.optional (systemRulesFile != null) "/etc/minisoc/alert_filter.yaml";
       seed = cfg.filter.seedUserFile;
       max_backups = cfg.filter.maxBackups;
-    };
+    }
+    // lib.optionalAttrs (cfg.filter.aiFile != null) { ai_file = cfg.filter.aiFile; };
     retention = {
       days = cfg.engine.retention.days;
       max_events = cfg.engine.retention.maxEvents;
@@ -286,6 +288,18 @@ let
         require_repeated_events = requireRepeatedEvents;
         minimum_occurrences = minimumOccurrences;
         protect_severity = protectSeverity;
+        backup_before_write = backupBeforeWrite;
+      };
+      filter_review = with cfg.ai.filterReview; {
+        mode = if enable then mode else "off";
+        interval_hours = interval;
+        lookback_days = lookbackDays;
+        max_alerts = maxAlerts;
+        minimum_false_positives = minimumFalsePositives;
+        minimum_rule_age_hours = minimumRuleAge;
+        low_hits_threshold = lowHitsThreshold;
+        max_changes = maxChanges;
+        minimum_confidence = minimumConfidence;
         backup_before_write = backupBeforeWrite;
       };
       prompts = lib.filterAttrs (_: v: v != null) (
@@ -495,6 +509,17 @@ in
         default = null;
         description = "Use this file instead of `systemRules`.";
       };
+      aiFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "$XDG_STATE_HOME/minisoc/ai_filters.yaml";
+        description = ''
+          Per-user file of the rules owned by the AI (auto-filter and filter
+          review); default `~/.config/minisoc/ai_filters.yaml`. MiniSOC
+          rewrites it (validated, backed up first); the AI never writes the
+          user rules file.
+        '';
+      };
       seedUserFile = lib.mkOption {
         type = lib.types.bool;
         default = true;
@@ -609,7 +634,7 @@ in
         autoDiscard = lib.mkOption {
           type = lib.types.bool;
           default = false;
-          description = "Let the AI propose (or perform, see autoDiscardPolicy.mode) the discard of benign alerts.";
+          description = "Let the AI propose (or perform, see autoDiscardPolicy.mode) closing benign alerts as false positive. The filter review never learns from these AI closures, only from the user's.";
         };
         autoDiscardPolicy = {
           mode = lib.mkOption {
@@ -618,7 +643,7 @@ in
               "automatic"
             ];
             default = "suggest";
-            description = "`suggest`: a proposal waits for your confirmation; `automatic`: discarded (restorable).";
+            description = "`suggest`: a proposal waits for your confirmation; `automatic`: closed as FP by the AI (re-openable).";
           };
           maximumSeverity = lib.mkOption {
             type = lib.types.enum [
@@ -628,7 +653,7 @@ in
               "high"
             ];
             default = "low";
-            description = "Highest severity the AI may discard. critical: never (not configurable).";
+            description = "Highest severity the AI may close as FP. critical: never (not configurable).";
           };
           minimumConfidence = lib.mkOption {
             type = lib.types.float;
@@ -669,7 +694,7 @@ in
             "automatic"
           ];
           default = "suggest";
-          description = "`suggest`: rules wait for validation in the UI; `automatic`: appended to the user rules file (backup first).";
+          description = "`suggest`: rules wait for validation in the UI; `automatic`: appended to the AI rules file (`filter.aiFile`, backup first).";
         };
         minimumConfidence = lib.mkOption {
           type = lib.types.float;
@@ -699,6 +724,64 @@ in
             "high"
           ];
           description = "Severities AI rules can never hide (critical and high are always included).";
+        };
+        backupBeforeWrite = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+        };
+      };
+
+      filterReview = {
+        enable = lib.mkEnableOption ''
+          the scheduled AI review of the AI rules: from the alerts the user
+          closed as false positive (TP closures as counter-examples) and each
+          rule's counter, the model creates, updates or deletes the rules of
+          the AI file. Code-enforced guardrails: see docs/minisoc.md'';
+        mode = lib.mkOption {
+          type = lib.types.enum [
+            "suggest"
+            "automatic"
+          ];
+          default = "suggest";
+          description = "`suggest`: changes wait for validation in the UI; `automatic`: the AI rules file is rewritten (backup first).";
+        };
+        interval = lib.mkOption {
+          type = lib.types.numbers.positive;
+          default = 24;
+          description = "Hours between two reviews (`minisoc review` runs one now).";
+        };
+        lookbackDays = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 30;
+          description = "Closures taken into account.";
+        };
+        maxAlerts = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 200;
+          description = "Closed alerts considered per verdict (most recent first).";
+        };
+        minimumFalsePositives = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 3;
+          description = "A created or updated rule must cover at least this many alerts closed as FP by the user.";
+        };
+        minimumRuleAge = lib.mkOption {
+          type = lib.types.numbers.nonnegative;
+          default = 72;
+          description = "Hours since its last change before a rule may be modified or deleted (its counter needs time).";
+        };
+        lowHitsThreshold = lib.mkOption {
+          type = lib.types.ints.unsigned;
+          default = 2;
+          description = "A rule may be deleted when it excluded at most this many alerts since its last change (or when it would hide a TP).";
+        };
+        maxChanges = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 5;
+        };
+        minimumConfidence = lib.mkOption {
+          type = lib.types.float;
+          default = 0.7;
         };
         backupBeforeWrite = lib.mkOption {
           type = lib.types.bool;

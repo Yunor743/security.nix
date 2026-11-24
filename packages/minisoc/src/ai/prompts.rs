@@ -7,12 +7,13 @@
 use crate::config::{expand, AiCfg};
 use std::fs;
 
-pub const NAMES: [&str; 5] = [
+pub const NAMES: [&str; 6] = [
     "system",
     "analysis",
     "enrichment",
     "classification",
     "filter",
+    "review",
 ];
 
 pub fn default_prompt(name: &str) -> &'static str {
@@ -22,6 +23,7 @@ pub fn default_prompt(name: &str) -> &'static str {
         "enrichment" => include_str!("../../prompts/enrichment.md"),
         "classification" => include_str!("../../prompts/classification.md"),
         "filter" => include_str!("../../prompts/filter.md"),
+        "review" => include_str!("../../prompts/review.md"),
         _ => "",
     }
 }
@@ -77,6 +79,14 @@ pub fn filter_user_prompt(cfg: &AiCfg, data_json: &str) -> String {
     format!(
         "{}\n\n{}",
         resolve(cfg, "filter").0.trim(),
+        data_block(data_json)
+    )
+}
+
+pub fn review_user_prompt(cfg: &AiCfg, data_json: &str) -> String {
+    format!(
+        "{}\n\n{}",
+        resolve(cfg, "review").0.trim(),
         data_block(data_json)
     )
 }

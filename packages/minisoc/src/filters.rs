@@ -583,11 +583,12 @@ struct FileState {
     using_last_good: bool,
 }
 
-/// Loads the NixOS-managed system file(s) (read-only) and the user file
-/// (writable, 0600), hot-reloads them on change and keeps the last valid
-/// version of each one.
+/// Loads the NixOS-managed system file(s) (read-only), the user file and the
+/// AI file (both writable, 0600), hot-reloads them on change and keeps the
+/// last valid version of each one.
 pub struct FilterManager {
     pub user_file: PathBuf,
+    pub ai_file: PathBuf,
     files: Vec<PathBuf>,
     good_dir: PathBuf,
     seed_enabled: bool,
@@ -610,13 +611,16 @@ impl FilterManager {
     pub fn new(
         system_files: Vec<PathBuf>,
         user_file: PathBuf,
+        ai_file: PathBuf,
         state_dir: &Path,
         seed: bool,
     ) -> Self {
         let mut files = system_files;
         files.push(user_file.clone());
+        files.push(ai_file.clone());
         Self {
             user_file,
+            ai_file,
             files,
             good_dir: state_dir.join("filters-last-good"),
             seed_enabled: seed,
@@ -630,6 +634,7 @@ impl FilterManager {
         Self::new(
             cfg.system_filter_files(),
             cfg.user_filter_file(),
+            cfg.ai_filter_file(),
             &cfg.state_dir(),
             cfg.filter.seed,
         )
@@ -668,7 +673,8 @@ impl FilterManager {
             warning: None,
             using_last_good: false,
         };
-        let is_user = p == self.user_file;
+        // User and AI files are optional and private; system files are not.
+        let is_user = p == self.user_file || p == self.ai_file;
         if st.sig.is_none() {
             if !is_user {
                 st.error = Some("missing".into());
@@ -761,13 +767,34 @@ impl FilterManager {
         true
     }
 
+    /// Who writes a rules file: `system` (NixOS), `user` or `ai`.
+    pub fn owner(&self, p: &Path) -> &'static str {
+        if p == self.ai_file {
+            "ai"
+        } else if p == self.user_file {
+            "user"
+        } else {
+            "system"
+        }
+    }
+
+    /// Rules of one owner, as written in its file (definition specs).
+    pub fn rules_of(&self, owner: &str) -> Vec<&Rule> {
+        self.ruleset
+            .rules
+            .iter()
+            .filter(|r| self.owner(Path::new(&r.origin)) == owner)
+            .collect()
+    }
+
     pub fn status(&self) -> Value {
         let files: Vec<Value> = self
             .state
             .iter()
             .map(|(p, st)| {
                 json!({
-                    "path": p, "writable": *p == self.user_file, "present": st.sig.is_some(),
+                    "path": p, "owner": self.owner(p),
+                    "writable": *p == self.user_file || *p == self.ai_file, "present": st.sig.is_some(),
                     "rules": st.rules.len(), "error": st.error, "warning": st.warning,
                     "using_last_good": st.using_last_good,
                 })
@@ -908,6 +935,41 @@ pub fn append_rule(
     }
     atomic_write(path, candidate.as_bytes(), 0o600).map_err(|e| e.to_string())?;
     Ok(candidate)
+}
+
+/// Header of the file the AI rewrites (the user may edit it too: the next
+/// review starts from what is there).
+pub const AI_HEADER: &str = "\
+# MiniSOC — exclusion rules owned by the AI (auto-filter, scheduled filter
+# review). Rewritten by MiniSOC: comments are not kept. Every write is
+# validated and backed up first. Your own rules belong in alert_filter.yaml.
+";
+
+/// Replace the whole rule list of a file the caller owns (the AI file):
+/// every rule is validated, the document too, the previous version is backed
+/// up, then written atomically (0600).
+pub fn write_rules(
+    path: &Path,
+    rules: &[Value],
+    header: &str,
+    backup_dir: Option<&Path>,
+    keep: usize,
+) -> Result<String, RuleError> {
+    let origin = path.to_string_lossy().to_string();
+    let doc = json!({"version": 1, "filters": rules});
+    let text = format!(
+        "{header}{}",
+        serde_yaml::to_string(&doc).map_err(|e| e.to_string())?
+    );
+    parse_document(&text, &origin)?;
+    if let Some(d) = backup_dir {
+        backup(path, d, keep).map_err(|e| format!("backup failed, not modified: {e}"))?;
+    }
+    if let Some(d) = path.parent() {
+        ensure_dir(d, 0o700).map_err(|e| e.to_string())?;
+    }
+    atomic_write(path, text.as_bytes(), 0o600).map_err(|e| e.to_string())?;
+    Ok(text)
 }
 
 /// Restore a backup (validated first; the current file is backed up too).
@@ -1051,7 +1113,7 @@ filters:
     fn hot_reload_keeps_last_valid_version() {
         let d = tmpdir("reload");
         let f = d.join("alert_filter.yaml");
-        let mut fm = FilterManager::new(vec![], f.clone(), &d, true);
+        let mut fm = FilterManager::new(vec![], f.clone(), d.join("ai_filters.yaml"), &d, true);
         fm.seed();
         assert_eq!(
             fs::metadata(&f).unwrap().permissions().mode() & 0o777,
@@ -1073,7 +1135,7 @@ filters:
         assert_eq!(fm.ruleset.rules.len(), 3);
         assert_eq!(fm.status()["ok"], false);
         // Also across restarts (persisted last-good copy).
-        let mut fm2 = FilterManager::new(vec![], f.clone(), &d, true);
+        let mut fm2 = FilterManager::new(vec![], f.clone(), d.join("ai_filters.yaml"), &d, true);
         fm2.reload(false);
         assert_eq!(fm2.ruleset.rules.len(), 3);
         assert_eq!(fm2.status()["files"][0]["using_last_good"], true);

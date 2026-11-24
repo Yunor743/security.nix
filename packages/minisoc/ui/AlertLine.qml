@@ -120,7 +120,8 @@ Item {
             }
             Link { text: l.ev.pinned ? "unpin" : "pin"; tint: l.theme.accent; onClicked: l.action(l.ev.pinned ? "unpin" : "pin", l.ev.id) }
             Link { text: "details"; onClicked: l.action("details", l.ev.id) }
-            Link { text: "discard"; onClicked: l.action("discard", l.ev.id) }
+            Link { text: "tp"; tint: l.theme.high; onClicked: l.action("tp", l.ev.id) }
+            Link { text: "fp"; onClicked: l.action("fp", l.ev.id) }
             Link { text: "filter"; onClicked: l.action("filter", l.ev.id) }
             Link { text: "ai"; tint: l.theme.ai; onClicked: l.action("ai", l.ev.id) }
         }

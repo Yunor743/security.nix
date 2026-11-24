@@ -100,8 +100,12 @@ Rectangle {
                 spacing: 4
                 Btn { theme: d.theme; label: d.ev && d.ev.pinned ? "UNPIN" : "PIN"; tint: d.theme.accent
                       onClicked: d.action(d.ev.pinned ? "unpin" : "pin", d.ev.id) }
-                Btn { theme: d.theme; label: d.ev && d.ev.discarded ? "RESTORE" : "DISCARD"
-                      onClicked: d.action(d.ev.discarded ? "restore" : "discard", d.ev.id) }
+                Btn { theme: d.theme; label: "TP"; tint: d.theme.high; visible: d.ev && d.ev.verdict !== "tp"
+                      onClicked: d.action("tp", d.ev.id) }
+                Btn { theme: d.theme; label: "FP"; visible: d.ev && d.ev.verdict !== "fp"
+                      onClicked: d.action("fp", d.ev.id) }
+                Btn { theme: d.theme; label: "REOPEN"; tint: d.theme.accent; visible: d.ev && d.ev.closed === true
+                      onClicked: d.action("reopen", d.ev.id) }
                 Btn { theme: d.theme; label: "CREATE FILTER"; onClicked: d.action("draft", d.ev.id) }
                 Btn { theme: d.theme; label: d.an ? "RE-ANALYZE" : "ANALYZE"; tint: d.theme.ai; visible: d.aiEnabled
                       onClicked: d.action("ai", d.ev.id) }
@@ -143,9 +147,10 @@ Rectangle {
             Kv { k: "similar"; v: d.ev && d.ev.similar ? d.ev.similar.events + " event(s), " + d.ev.similar.occurrences + " occurrence(s)" : "" }
             Kv {
                 k: "state"
-                v: d.ev ? [d.ev.pinned ? "pinned" : "", d.ev.discarded ? "discarded by " + d.ev.discarded_by : "",
+                v: d.ev ? [d.ev.pinned ? "pinned" : "",
+                           d.ev.closed ? "closed as " + (d.ev.verdict === "tp" ? "true" : "false") + " positive by " + d.ev.closed_by : "",
                            d.ev.filtered_by ? "filtered" : "", d.ev.analyzed ? "analyzed" : "",
-                           (!d.ev.discarded && !d.ev.filtered_by) ? "active" : ""].filter(x => x).join(", ") : ""
+                           (!d.ev.closed && !d.ev.filtered_by) ? "active" : ""].filter(x => x).join(", ") : ""
             }
 
             Section { text: "FILTERING"; visible: d.ev && d.ev.filter_rule !== undefined }
