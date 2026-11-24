@@ -16,6 +16,16 @@ let
     readFrom = "beginning";
     ignoreOlderThan = 86400;
   };
+  mac = transform: {
+    enable = true;
+    type = "journald";
+    journald.matches._TRANSPORT = [ "audit" ];
+    parser = "raw";
+    pattern = null;
+    readFrom = "end";
+    ignoreOlderThan = 86400;
+    inherit transform;
+  };
   base = mlib.mkVectorConfig {
     sources = {
       app_json = src "json" null;
@@ -23,6 +33,22 @@ let
       app_grok = src "grok" "%{TIMESTAMP_ISO8601:timestamp} %{IP:ip} %{WORD:level} %{GREEDYDATA:message}";
       app_syslog = src "syslog" null;
       app_raw = src "raw" null;
+      # Security module denials, as the integrations configure them.
+      mac_apparmor = mac (mlib.macTransforms.apparmor { wouldBe = false; });
+      mac_selinux = mac (mlib.macTransforms.selinux { wouldBe = false; });
+      mac_selinux_wb = mac (mlib.macTransforms.selinux { wouldBe = true; });
+      mac_fapolicyd = mac (
+        mlib.macTransforms.fapolicyd {
+          wouldBe = false;
+          permissive = false;
+        }
+      );
+      mac_fapolicyd_perm = mac (
+        mlib.macTransforms.fapolicyd {
+          wouldBe = false;
+          permissive = true;
+        }
+      );
     };
     spoolDir = "/tmp/spool";
     dataDir = "/tmp/data";
@@ -48,6 +74,17 @@ let
             source = lib.replaceStrings [ "$" ] [ "$$" ] assertions;
           }
         ];
+      }
+    ];
+  };
+  none = name: transform: line: {
+    inherit name;
+    no_outputs_from = [ transform ];
+    inputs = [
+      {
+        insert_at = transform;
+        type = "log";
+        log_fields.message = line;
       }
     ];
   };
@@ -86,6 +123,58 @@ let
       (case "raw" "parse_app_raw" "plain text line" ''
         assert_eq!(.parsed.message, "plain text line")
       '')
+      (case "apparmor-denied" "parse_mac_apparmor"
+        ''apparmor="DENIED" operation="open" class="file" profile="top" name="/etc/shadow" pid=42 comm="top" requested_mask="r" denied_mask="r" fsuid=0 ouid=0''
+        ''
+          assert_eq!(.parsed.severity, "medium")
+          assert_eq!(.parsed.event_type, "apparmor_denied")
+          assert_eq!(.parsed.message, "AppArmor denied open /etc/shadow — top (profile top)")
+          assert!(!exists(.file))
+        ''
+      )
+      (case "apparmor-dbus" "parse_mac_apparmor"
+        ''USER_AVC pid=1 uid=101 auid=4294967295 msg='apparmor="DENIED" operation="dbus_method_call" bus="system" path="/org/freedesktop/login1" interface="org.freedesktop.login1.Manager" member="PowerOff" mask="send" name="org.freedesktop.login1" pid=7 label="foo" peer_label="unconfined" exe="/x" sauid=101 hostname=? addr=? terminal=?' ''
+        ''
+          assert_eq!(.parsed.event_type, "apparmor_denied")
+          assert!(contains(string!(.parsed.message), "dbus_method_call"))
+        ''
+      )
+      (none "apparmor-complain-dropped" "parse_mac_apparmor"
+        ''apparmor="ALLOWED" operation="open" class="file" profile="sddm" name="/sys/x" pid=1 comm="sddm" requested_mask="r" denied_mask="r"''
+      )
+      (none "audit-other-dropped" "parse_mac_apparmor"
+        ''SERVICE_START pid=1 uid=0 msg='unit=sshd comm="systemd"' ''
+      )
+      (case "selinux-denied" "parse_mac_selinux"
+        ''avc:  denied  { read } for  pid=42 comm="cat" name="shadow" dev="vda" ino=12 scontext=user_u:user_r:user_t:s0 tcontext=system_u:object_r:shadow_t:s0 tclass=file permissive=0''
+        ''
+          assert_eq!(.parsed.event_type, "selinux_denied")
+          assert_eq!(.parsed.message, "SELinux denied read on file shadow — cat (user_t → shadow_t)")
+        ''
+      )
+      (none "selinux-permissive-dropped" "parse_mac_selinux"
+        ''avc:  denied  { read } for  pid=42 comm="cat" name="x" scontext=a:b:c_t:s0 tcontext=a:b:d_t:s0 tclass=file permissive=1''
+      )
+      (case "selinux-permissive-would-be" "parse_mac_selinux_wb"
+        ''avc:  denied  { read write } for  pid=42 comm="cat" path="/x" scontext=a:b:c_t:s0 tcontext=a:b:d_t:s0 tclass=file permissive=1''
+        ''
+          assert_eq!(.parsed.severity, "low")
+          assert_eq!(.parsed.message, "SELinux would deny read write on file /x — cat (c_t → d_t)")
+        ''
+      )
+      (case "fapolicyd-denied" "parse_mac_fapolicyd"
+        "rule=9 dec=deny_syslog perm=execute auid=1000 pid=42 exe=/run/current-system/sw/bin/bash : path=/tmp/evil ftype=application/x-executable trust=0"
+        ''
+          assert_eq!(.parsed.severity, "high")
+          assert_eq!(.parsed.message, "fapolicyd denied execute /tmp/evil — /run/current-system/sw/bin/bash (rule 9)")
+        ''
+      )
+      (none "fapolicyd-allow-dropped" "parse_mac_fapolicyd"
+        "rule=1 dec=allow perm=open auid=0 pid=1 exe=/x : path=/y ftype=text/plain trust=1"
+      )
+      (none "fapolicyd-permissive-dropped" "parse_mac_fapolicyd_perm"
+        "rule=9 dec=deny_syslog perm=execute auid=1000 pid=42 exe=/bin/sh : path=/tmp/x ftype=application/x-executable trust=0"
+      )
     ];
   };
   file = writeText "minisoc-vector-test.json" (builtins.toJSON config);

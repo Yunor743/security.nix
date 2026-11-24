@@ -19,8 +19,43 @@ let
       enable = lib.mkEnableOption "this source" // {
         default = true;
       };
+      type = lib.mkOption {
+        type = lib.types.enum [
+          "file"
+          "journald"
+        ];
+        default = "file";
+        description = ''
+          `file`: lines of the files in `paths`. `journald`: the `MESSAGE` of
+          journal entries selected by `journald.matches` (the collector is
+          then added to the `systemd-journal` group).
+        '';
+      };
+      journald.matches = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        example = {
+          _SYSTEMD_UNIT = [ "sshd.service" ];
+        };
+        description = "Journal fields and accepted values (`journalctl FIELD=value`); empty: whole journal.";
+      };
+      transform = lib.mkOption {
+        type = lib.types.nullOr lib.types.lines;
+        default = null;
+        example = ''
+          if !contains(.raw, "Failed password") { abort }
+          .parsed.severity = "medium"
+        '';
+        description = ''
+          VRL run after parsing (on `.raw` and `.parsed`): set fields the
+          engine reads (`.parsed.message`, `.parsed.severity`,
+          `.parsed.event_type`, `.parsed.timestamp`) or drop the event with
+          `abort`.
+        '';
+      };
       paths = lib.mkOption {
         type = lib.types.listOf lib.types.str;
+        default = [ ];
         example = [ "/var/log/rustinel/alerts.json*" ];
         description = ''
           Files to watch (glob patterns allowed). Files created later,
@@ -267,6 +302,7 @@ let
         inherit (cfg) sources;
         inherit spoolDir;
         dataDir = "${cfg.collector.stateDir}/data";
+        journalctl = "${config.systemd.package}/bin/journalctl";
       }) cfg.collector.extraSettings
     )
   );
@@ -328,6 +364,54 @@ in
       default = config.services.rustinel.enable or false;
       defaultText = lib.literalExpression "config.services.rustinel.enable";
       description = "Collect Rustinel alerts (`/var/log/rustinel/alerts.json*`).";
+    };
+
+    integrations.apparmor = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = config.security.apparmor.enable;
+        defaultText = lib.literalExpression "config.security.apparmor.enable";
+        description = "Alert on AppArmor denials (kernel audit records in the journal).";
+      };
+      wouldBe = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Also alert (severity `low`) on what profiles in complain mode would
+          deny. Noisy: apparmor.d in complain mode logs a lot.
+        '';
+      };
+    };
+
+    integrations.selinux = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = config.security.selinux.enable or false;
+        defaultText = lib.literalExpression "config.security.selinux.enable";
+        description = "Alert on SELinux AVC denials.";
+      };
+      wouldBe = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Also alert (severity `low`) on permissive denials (`permissive=1`), not enforced.";
+      };
+    };
+
+    integrations.fapolicyd = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = config.services.fapolicyd.enable or false;
+        defaultText = lib.literalExpression "config.services.fapolicyd.enable";
+        description = "Alert on fapolicyd denials (`deny_syslog` rules).";
+      };
+      wouldBe = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          In permissive mode (`services.fapolicyd.permissive`), also alert
+          (severity `low`) on what would be denied.
+        '';
+      };
     };
 
     sources = lib.mkOption {
@@ -705,13 +789,52 @@ in
   config = lib.mkIf cfg.enable (
     lib.mkMerge [
       {
-        services.minisoc.sources = lib.mkIf cfg.integrations.rustinel.enable {
-          rustinel = {
-            paths = lib.mkDefault [ "/var/log/rustinel/alerts.json*" ];
-            parser = lib.mkDefault "json";
-            normalizer = lib.mkDefault "rustinel";
-          };
-        };
+        services.minisoc.sources = lib.mkMerge [
+          (lib.mkIf cfg.integrations.rustinel.enable {
+            rustinel = {
+              paths = lib.mkDefault [ "/var/log/rustinel/alerts.json*" ];
+              parser = lib.mkDefault "json";
+              normalizer = lib.mkDefault "rustinel";
+            };
+          })
+          # Access denials of the security modules, from the journal.
+          (lib.mkIf cfg.integrations.apparmor.enable {
+            apparmor = {
+              type = "journald";
+              journald.matches._TRANSPORT = lib.mkDefault [ "audit" ];
+              parser = "raw";
+              readFrom = lib.mkDefault "end";
+              transform = lib.mkDefault (
+                mlib.macTransforms.apparmor { inherit (cfg.integrations.apparmor) wouldBe; }
+              );
+            };
+          })
+          (lib.mkIf cfg.integrations.selinux.enable {
+            selinux = {
+              type = "journald";
+              journald.matches._TRANSPORT = lib.mkDefault [ "audit" ];
+              parser = "raw";
+              readFrom = lib.mkDefault "end";
+              transform = lib.mkDefault (
+                mlib.macTransforms.selinux { inherit (cfg.integrations.selinux) wouldBe; }
+              );
+            };
+          })
+          (lib.mkIf cfg.integrations.fapolicyd.enable {
+            fapolicyd = {
+              type = "journald";
+              journald.matches._SYSTEMD_UNIT = lib.mkDefault [ "fapolicyd.service" ];
+              parser = "raw";
+              readFrom = lib.mkDefault "end";
+              transform = lib.mkDefault (
+                mlib.macTransforms.fapolicyd {
+                  inherit (cfg.integrations.fapolicyd) wouldBe;
+                  permissive = config.services.fapolicyd.permissive or false;
+                }
+              );
+            };
+          })
+        ];
 
         assertions = [
           {
@@ -728,6 +851,10 @@ in
               || s.pattern != null
             ) (lib.attrValues cfg.sources);
             message = "services.minisoc.sources: the regex and grok parsers need a `pattern`.";
+          }
+          {
+            assertion = lib.all (s: s.type != "file" || s.paths != [ ]) (lib.attrValues enabledSources);
+            message = "services.minisoc.sources: file sources need `paths`.";
           }
           {
             assertion = lib.all (s: s.parser != "regex" || !(lib.hasInfix "'" s.pattern)) (
@@ -873,6 +1000,10 @@ in
             RestartSec = 5;
 
             # Read-only access to logs, nothing else.
+            # Journal sources (security module denials...).
+            SupplementaryGroups = lib.optional (lib.any (s: s.type == "journald") (
+              lib.attrValues enabledSources
+            )) "systemd-journal";
             AmbientCapabilities = lib.optional cfg.collector.readAnyFile "CAP_DAC_READ_SEARCH";
             CapabilityBoundingSet = lib.optional cfg.collector.readAnyFile "CAP_DAC_READ_SEARCH";
             NoNewPrivileges = true;

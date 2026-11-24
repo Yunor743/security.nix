@@ -73,6 +73,9 @@ let
     ]
   );
 
+  aaProbe = pkgs.runCommandLocal "aa-probe" { } ''
+    install -D ${pkgs.gnugrep}/bin/grep $out/bin/aa-probe
+  '';
   minisocPkg = pkgs.callPackage ../packages/minisoc { };
   minisocUi = pkgs.callPackage ../packages/minisoc-ui { minisoc = minisocPkg; };
 
@@ -95,6 +98,16 @@ pkgs.testers.runNixOSTest {
 
       virtualisation.memorySize = 3072;
 
+      # A real AppArmor denial for the security module integration: a probe
+      # program (a copy of grep) confined to the store, reading a root file.
+      security.apparmor.enable = true;
+      security.apparmor.policies.minisoc-probe.profile = ''
+        include <tunables/global>
+        profile minisoc-probe ${aaProbe}/bin/aa-probe {
+          include <abstractions/base>
+          /nix/store/** mr,
+        }
+      '';
       users.users.alice = {
         isNormalUser = true;
         uid = 1000;
@@ -174,6 +187,7 @@ pkgs.testers.runNixOSTest {
       programs.sway.enable = true;
       environment.systemPackages = [
         pkgs.grim
+        aaProbe
         pkgs.jq
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
@@ -219,6 +233,13 @@ pkgs.testers.runNixOSTest {
         assert "CapabilityBoundingSet=cap_dac_read_search" in props, props
         assert "PrivateNetwork=yes" in props, props
 
+    with subtest("security module denial becomes an alert (AppArmor)"):
+        sh("echo secret > /root/minisoc-probe-secret")
+        machine.fail("aa-probe secret /root/minisoc-probe-secret")
+        aa = wait_for(lambda: find("AppArmor denied"), "AppArmor denial alert")
+        assert aa["source"] == "apparmor" and aa["severity"] == "medium", aa
+        assert "/root/minisoc-probe-secret" in aa["message"] and "minisoc-probe" in aa["message"], aa
+
     with subtest("Home Manager seeded the user rules 0600 in a 0700 dir"):
         assert sh("stat -c '%a %U' /home/alice/.config/minisoc/alert_filter.yaml").strip() == "600 alice"
         assert sh("stat -c '%a' /home/alice/.config/minisoc").strip() == "700"
@@ -228,7 +249,7 @@ pkgs.testers.runNixOSTest {
     with subtest("root-only log created after start is collected (0600 file in 0700 dir)"):
         sh("install -d -m 0700 /var/log/rustinel")
         sh("install -m 0600 ${alerts} /var/log/rustinel/alerts.json.2026-11-23")
-        wait_for(lambda: len(events()) >= 4, "4 events in the store")
+        wait_for(lambda: len(events()) >= 5, "4 Rustinel events + the AppArmor one in the store")
         spool = sh("stat -c '%a %G' /var/lib/minisoc-collector/spool/*.ndjson").split()
         assert spool[0] in ("640", "600") and spool[1] == "minisoc", spool
 
