@@ -73,6 +73,13 @@ Item {
                     text: "◆"; color: l.theme.accent; font.pixelSize: l.theme.fontSize - 1
                 }
             }
+            Text { // time, next to the severity
+                text: l.fmtTime(l.ev.timestamp)
+                color: l.theme.muted
+                opacity: l.active ? 1 : l.theme.textOpacity
+                font.family: l.theme.mono; font.pixelSize: l.theme.fontSize - 2
+                style: Text.Raised; styleColor: l.theme.shadow
+            }
             Text {
                 Layout.fillWidth: true
                 text: l.ev.message || ""
@@ -86,7 +93,8 @@ Item {
                 style: Text.Raised; styleColor: l.theme.shadow
             }
             Text {
-                text: ((l.ev.occurrences || 1) > 1 ? "×" + l.ev.occurrences + "  " : "") + l.fmtTime(l.ev.timestamp)
+                visible: (l.ev.occurrences || 1) > 1
+                text: "×" + l.ev.occurrences
                 color: l.theme.muted
                 opacity: l.active ? 1 : l.theme.textOpacity
                 font.family: l.theme.mono; font.pixelSize: l.theme.fontSize - 2

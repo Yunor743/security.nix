@@ -148,7 +148,15 @@ let
     else
       { };
 
-  finalRules = cfg.rules // cfg.extraRules;
+  # Scanners may read any file (YARA, antivirus...), before the profile's
+  # deny rules: on NixOS every Nix-built ELF outside the store is
+  # `application/x-bad-elf` (non-standard interpreter path), which the
+  # profiles deny for any access, reading included.
+  scannerRules = lib.optionalAttrs (cfg.scanners != [ ]) {
+    "05-scanners.rules" = lib.concatMapStrings (exe: "allow perm=open exe=${exe} : all\n") cfg.scanners;
+  };
+
+  finalRules = cfg.rules // cfg.extraRules // scannerRules;
 in
 {
   options.services.fapolicyd = {
@@ -254,6 +262,22 @@ in
         Extra rule files merged on top of
         {option}`services.fapolicyd.rules`.  Use this to add
         rules without replacing the profile defaults.
+      '';
+    };
+
+    scanners = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = lib.optional (config.services.rustinel.enable or false) (
+        lib.getExe config.services.rustinel.package
+      );
+      defaultText = lib.literalExpression "lib.optional config.services.rustinel.enable (lib.getExe config.services.rustinel.package)";
+      example = lib.literalExpression ''[ "${pkgs.clamav}/bin/clamd" ]'';
+      description = ''
+        Executables (exact paths) allowed to open any file for reading, never
+        to execute it: security scanners. Without it a scanner cannot read
+        the binaries outside the store it should inspect, since the profiles
+        deny any access to `application/x-bad-elf` files (every Nix-built ELF
+        outside the store). Rustinel is added when it is enabled.
       '';
     };
 

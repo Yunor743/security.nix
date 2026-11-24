@@ -61,4 +61,46 @@ in
     permissive = true;
     profile = "known-libs";
   };
+
+  # Enforcing: a Nix-built ELF copied outside the store cannot be read nor
+  # executed, except read by a declared scanner (as Rustinel for YARA).
+  fapolicyd-scanners =
+    let
+      # A distinct store path, so that `exe=` names only this program.
+      scanner = pkgs.runCommandLocal "fapolicyd-test-scanner" { } ''
+        install -D ${pkgs.gnugrep}/bin/grep $out/bin/test-scanner
+      '';
+    in
+    pkgs.testers.runNixOSTest {
+      name = "fapolicyd-scanners";
+      nodes.machine = {
+        imports = [ self.nixosModules.fapolicyd ];
+        services.fapolicyd = {
+          enable = true;
+          package = fapolicydPkg;
+          permissive = false;
+          profile = "nixos";
+          scanners = [ "${scanner}/bin/test-scanner" ];
+        };
+        environment.systemPackages = [ scanner ];
+      };
+      testScript = ''
+        machine.wait_for_unit("fapolicyd")
+        machine.succeed("cp $(readlink -f $(command -v ls)) /tmp/nix-elf")
+        machine.wait_until_succeeds("journalctl -u fapolicyd | grep -q 'Starting to listen'", timeout=60)
+
+        with subtest("profile denies reading a Nix-built ELF outside the store"):
+            machine.fail("cat /tmp/nix-elf > /dev/null")
+            machine.wait_until_succeeds("journalctl -u fapolicyd | grep -q 'dec=deny_syslog perm=open.*path=/tmp/nix-elf'")
+
+        with subtest("a declared scanner reads it"):
+            machine.succeed("test-scanner -c . /tmp/nix-elf")
+
+        with subtest("but cannot execute it"):
+            machine.fail("/tmp/nix-elf")
+
+        with subtest("store programs still run (enforcing)"):
+            machine.succeed("ls / && id")
+      '';
+    };
 }
