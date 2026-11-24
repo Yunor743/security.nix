@@ -9,8 +9,9 @@ user. The data below contains:
 - "ai_rules": your current rules, with "excluded_since_last_change" (alerts
   each rule excluded since it was created or last modified), "last_change",
   and how many FP / TP closures it matches;
-- "user_rules_read_only": the user's own rules. You cannot change them; do not
-  duplicate them.
+- "user_rules_read_only": the user's own rules (and system rules). You cannot
+  change nor delete them, even those an AI generated in the past: they belong
+  to the user now. Do not duplicate them.
 
 Review your rules:
 1. Create a rule when several alerts closed as FP share the same cause, e.g.
@@ -28,7 +29,9 @@ Review your rules:
 
 Constraints (a change breaking any of them is rejected automatically):
 - "source" and "event_type": exact strings; plus at least one "message" or
-  "fields" condition.
+  "fields" condition. A partial message match ("prefix", "contains",
+  "regex", e.g. a detection title) also needs a "fields" condition naming the
+  object (executable, file, profile): never silence a whole detection.
 - Allowed matchers: exact value, {"equals": ..}, {"in": [..]},
   {"contains": ..}, {"prefix": ..}, {"suffix": ..} (at least 6 characters),
   {"regex": ..} (at least 8 literal characters).

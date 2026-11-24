@@ -461,7 +461,8 @@ minisoc show <id> [--json]          everything about one alert
 minisoc pin|unpin <id>
 minisoc tp <id> | fp <id> | fp --all   close as true / false positive (all: every active alert)
 minisoc reopen <id>                 re-open a closed alert (`restore`; `discard` = `fp`)
-minisoc review [--dry-run] [--json] run the AI filter review now (dry run: show, change nothing)
+minisoc review [--dry-run] [--show-input] [--json]   AI filter review now (dry run: change nothing;
+                                    show-input: the redacted data sent, no request)
 minisoc explain <id>                why rules keep / exclude it
 minisoc analyze <id>                request an AI analysis
 minisoc filter validate [FILE] | list | draft <id> | create <id> | backups | rollback [--to FILE]
@@ -650,6 +651,8 @@ services.minisoc.ai.filterReview = {
   lowHitsThreshold = 2;       # a rule excluding <= this since its last change may go
   maxChanges = 5;             # per review
   minimumConfidence = 0.7;
+  maxOutputTokens = 16384;    # the reply of a review is long; reasoning counts
+  reasoningEffort = null;     # "low" for reasoning models that truncate
 };
 ```
 
@@ -673,15 +676,23 @@ gone). The prompt is `review` (`minisoc prompts edit review`).
   the system rules are never touched.
 - A created/updated rule names an exact `source` and `event_type` plus a
   specific `message`/`fields` condition (same matcher limits as auto-filter);
-  MiniSOC injects the severity protection (critical/high never hidden).
+  MiniSOC injects the severity protection (critical/high never hidden; a
+  severity in the model's answer is ignored).
 - It must cover at least `minimumFalsePositives` alerts **you** closed as FP,
   and among recent alerts it may hide nothing else: no pinned alert, no alert
   closed as TP, no high/critical alert, no alert of a pattern you never
   closed as FP (too broad), no duplicate of an existing rule.
+- A partial `message` match (`prefix`, `contains`, `regex`: typically a
+  detection title) needs a `fields` condition pinning the object
+  (executable, file, profile…): without it the rule would silence a whole
+  detection for every program. Every (redacted) alert message is sent in full
+  so that exact rules are possible.
 - A rule changed less than `minimumRuleAge` hours ago is left alone (its
   counter needs time). A rule is deleted only when it excluded at most
   `lowHitsThreshold` alerts since its last change, or — at once — when it
-  would hide an alert closed as TP.
+  would hide an alert closed as TP or breaks a guardrail added since it was
+  written. This clean-up is done by the code itself at every review,
+  before asking the model (and even when the model cannot be reached).
 - At most `maxChanges` changes per review, each with `confidence` ≥
   `minimumConfidence`. Rejected changes are listed with the reason.
 - `suggest`: changes wait in *Manage ▸ AI proposals* (re-checked against the
@@ -689,11 +700,12 @@ gone). The prompt is `review` (`minisoc prompts edit review`).
   `automatic`: one validated, backed-up rewrite of `ai_filters.yaml`; the
   engine hot-reloads it and the new rules' counters start at 0.
 - No request when nothing changed since the last review (same closures, same
-  rules and counters), and none at all while there is neither an FP closure
+  rules and counters, same prompt), and none at all while there is neither an FP closure
   nor an AI rule. Reviews count in the daily quota.
 
 Check it with `minisoc review --dry-run` (shows what the model would change
-and what the guardrails refuse, writes nothing), the history
+and what the guardrails refuse, writes nothing), `minisoc review --show-input`
+(the redacted data a review sends, no request), the history
 (`filter_review_create|update|delete`), and *Manage ▸ AI* (last/next run,
 summary, applied/proposed/rejected counts, last error). Undo an applied
 change by editing `ai_filters.yaml` or restoring a backup from
@@ -783,6 +795,11 @@ Ollama analysis in suggest mode + Home Manager widget):
 - **AI**: *Manage ▸ AI* or `minisoc status` (`last_error`, quota);
   `journalctl --user -u minisoc-engine`. `refusing to send data to a remote
   endpoint` means `ai.allowRemote` is off.
+- **`reply truncated at N tokens`**: reasoning models ("thinking", e.g. GLM,
+  o-series) spend part of the output budget on reasoning. Raise
+  `ai.limits.maxOutputTokens` (or `ai.filterReview.maxOutputTokens` for
+  reviews) or set `ai.reasoningEffort` / `ai.filterReview.reasoningEffort`
+  to `"low"`.
 - **Widget does not start with Hyprland**: no `graphical-session.target`;
   use `exec-once = minisoc-ui` and `ui.autostart = false`.
 - **Reset everything** (alerts, pins, history; logs untouched): stop the

@@ -129,7 +129,14 @@ pub fn input(cfg: &Config, ctx: &Context, fm: &FilterManager) -> Value {
     let privacy = &cfg.ai.privacy;
     let max = cfg.ai.limits.max_event_bytes / 2;
     let sample = |e: &Event, extra: Value| -> Value {
-        serde_json::from_str(&redact::payload(e, privacy, max, extra)).unwrap_or(Value::Null)
+        let mut v: Value =
+            serde_json::from_str(&redact::payload(e, privacy, max, extra)).unwrap_or(Value::Null);
+        // The whole (redacted) message: exact rules need it, and a shrunken
+        // one pushes the model towards prefixes that hide a whole detection.
+        if v.is_object() {
+            v["message"] = json!(truncate(&redact::Redactor::new(privacy, e).string(&e.message), 400));
+        }
+        v
     };
     let group = |events: &[Event], cap: usize| -> Vec<Value> {
         let mut groups: Vec<(String, usize, &Event)> = vec![];
@@ -184,6 +191,17 @@ pub fn input(cfg: &Config, ctx: &Context, fm: &FilterManager) -> Value {
     })
 }
 
+/// A partial message match (a detection title...) without any field pinning
+/// the object: it silences a whole detection, for every program.
+fn too_wide(spec: &Value) -> bool {
+    let exact = |v: &Value| match v {
+        Value::Object(o) => o.keys().all(|k| k == "equals" || k == "in"),
+        _ => true,
+    };
+    let m = &spec["match"];
+    m.get("message").is_some_and(|v| !exact(v)) && m.get("fields").is_none()
+}
+
 /// Validate a `match` from the model and turn it into a rule of the AI file.
 fn build_rule(
     cfg: &Config,
@@ -199,6 +217,8 @@ fn build_rule(
     let mut clean = Map::new();
     for (k, v) in m {
         match k.as_str() {
+            // Replaced below by MiniSOC's own protection, whatever it says.
+            "severity" => continue,
             "source" | "event_type" => {
                 if v.as_str().is_none_or(str::is_empty) {
                     return Err(format!("`{k}` must be an exact string"));
@@ -223,6 +243,9 @@ fn build_rule(
     }
     if !clean.contains_key("message") && !clean.contains_key("fields") {
         return Err("a `message` or `fields` condition is required (no source-wide rules)".into());
+    }
+    if too_wide(&json!({ "match": &clean })) {
+        return Err("a partial `message` match needs a `fields` condition pinning the object (executable, file, profile...)".into());
     }
     let allowed = policy::allowed_severities(&cfg.ai.auto_filter);
     if allowed.is_empty() {
@@ -364,7 +387,9 @@ pub fn check(cfg: &Config, ctx: &Context, reply: &Value) -> (Vec<Checked>, Vec<V
                         .get(&id)
                         .ok_or(format!("'{id}' is not a rule of the AI file (user rules are never changed)"))?;
                     let old = Rule::new(spec, "ai", 0)?;
-                    let unsafe_rule = ctx.hides_tp(&old);
+                    // A rule hiding a TP, or written before a guardrail it breaks,
+                    // may be fixed or removed at once.
+                    let unsafe_rule = ctx.hides_tp(&old) || too_wide(spec);
                     let age = hours_since(since.as_deref());
                     if age < r.minimum_rule_age_hours && !unsafe_rule {
                         return Err(format!(
@@ -401,6 +426,36 @@ pub fn check(cfg: &Config, ctx: &Context, reply: &Value) -> (Vec<Checked>, Vec<V
     (ok, rejected)
 }
 
+/// Deterministic hygiene, whatever the model says: an AI rule that hides an
+/// alert closed as TP, or that breaks a guardrail (written before it
+/// existed), is removed.
+pub fn hygiene(ctx: &Context) -> Vec<Checked> {
+    ctx.ai_rules
+        .iter()
+        .filter_map(|(id, (spec, _, _))| {
+            let rule = Rule::new(spec, "ai", 0).ok()?;
+            let why = if ctx.hides_tp(&rule) {
+                "it hides an alert closed as true positive"
+            } else if too_wide(spec) {
+                "it silences a whole detection (partial message match, no field pinning the object)"
+            } else {
+                return None;
+            };
+            Some(Checked {
+                action: "delete".into(),
+                id: id.clone(),
+                rule: None,
+                reason: format!("guardrail: {why}"),
+                confidence: 1.0,
+            })
+        })
+        .collect()
+}
+
+fn ok_ids(v: &[Checked]) -> Vec<String> {
+    v.iter().map(|c| c.id.clone()).collect()
+}
+
 /// Apply checked changes to the AI file (one validated, backed-up write).
 pub fn apply(cfg: &Config, fm: &FilterManager, changes: &[Checked]) -> Result<(), String> {
     let mut rules: Vec<Value> = fm.rules_of("ai").iter().map(|r| r.spec.clone()).collect();
@@ -433,6 +488,29 @@ pub fn apply(cfg: &Config, fm: &FilterManager, changes: &[Checked]) -> Result<()
     .map(|_| ())
 }
 
+/// One review request: quota, larger output budget, reasoning effort.
+fn ask(cfg: &Config, store: &Store, data: &Value) -> Result<Value, String> {
+    let r = &cfg.ai.filter_review;
+    let (req, _) = store.usage_today().unwrap_or((0, 0));
+    if req >= cfg.ai.limits.daily_quota as i64 {
+        return Err("daily AI quota reached".into());
+    }
+    let mut sent = data.clone();
+    sent["now"] = json!(now_iso());
+    let user = prompts::review_user_prompt(&cfg.ai, &sent.to_string());
+    // A whole rule list needs a larger reply than one analysis.
+    let mut ai = cfg.ai.clone();
+    ai.limits.max_output_tokens = ai.limits.max_output_tokens.max(r.max_output_tokens);
+    if r.reasoning_effort.is_some() {
+        ai.reasoning_effort = r.reasoning_effort.clone();
+    }
+    let reply = providers::complete_with_retry(&ai, &prompts::system_prompt(&ai), &user, |err| {
+        let _ = store.count_usage(err);
+    })
+    .map_err(|e| e.message)?;
+    extract_json(&reply).ok_or_else(|| "the model did not answer with a JSON object".to_string())
+}
+
 /// One review. `dry_run`: report only (no write, no proposal).
 pub fn run(cfg: &Config, store: &Store, dry_run: bool) -> Result<Value, String> {
     let r = &cfg.ai.filter_review;
@@ -450,25 +528,32 @@ pub fn run(cfg: &Config, store: &Store, dry_run: bool) -> Result<Value, String> 
         return Ok(report);
     }
     // Same evidence as the last review: no new request.
-    let input_hash = sha(&[&data.to_string()], 16);
-    if !dry_run && store.meta_get("review_input").ok().flatten().as_deref() == Some(&input_hash) {
+    // The prompt is part of it: editing it warrants a new review.
+    let prompt = prompts::resolve(&cfg.ai, "review").0;
+    let input_hash = sha(&[&data.to_string(), &prompt], 16);
+    let cleanup = hygiene(&ctx);
+    if !dry_run
+        && cleanup.is_empty()
+        && store.meta_get("review_input").ok().flatten().as_deref() == Some(&input_hash)
+    {
         report["skipped"] = json!("nothing changed since the last review");
         return Ok(report);
     }
-    let (req, _) = store.usage_today().unwrap_or((0, 0));
-    if req >= cfg.ai.limits.daily_quota as i64 {
-        return Err("daily AI quota reached".into());
-    }
-    let mut sent = data.clone();
-    sent["now"] = json!(now_iso());
-    let user = prompts::review_user_prompt(&cfg.ai, &sent.to_string());
-    let reply = providers::complete_with_retry(&cfg.ai, &prompts::system_prompt(&cfg.ai), &user, |err| {
-        let _ = store.count_usage(err);
-    })
-    .map_err(|e| e.message)?;
-    let reply = extract_json(&reply).ok_or("the model did not answer with a JSON object")?;
+    // The model is asked within the quota; the hygiene still applies if it
+    // cannot answer.
+    let reply = ask(cfg, store, &data).or_else(|e| {
+        if cleanup.is_empty() {
+            Err(e)
+        } else {
+            report["error"] = json!(e);
+            Ok(json!({"changes": []}))
+        }
+    })?;
     report["summary"] = json!(truncate(reply.get("summary").and_then(Value::as_str).unwrap_or(""), 1000));
-    let (ok, rejected) = check(cfg, &ctx, &reply);
+    let (model_ok, rejected) = check(cfg, &ctx, &reply);
+    // Code-decided removals first; the model's changes to those rules drop.
+    let mut ok = cleanup;
+    ok.extend(model_ok.into_iter().filter(|c| !ok_ids(&hygiene(&ctx)).contains(&c.id)));
     report["rejected"] = json!(rejected);
     let list: Vec<Value> = ok.iter().map(Checked::to_json).collect();
     if dry_run {
@@ -486,7 +571,7 @@ pub fn run(cfg: &Config, store: &Store, dry_run: bool) -> Result<Value, String> 
         // The evidence now includes the rules just written.
         fm.reload(true);
         let after = input(cfg, &Context::gather(cfg, store, &fm)?, &fm);
-        let _ = store.meta_set("review_input", &sha(&[&after.to_string()], 16));
+        let _ = store.meta_set("review_input", &sha(&[&after.to_string(), &prompt], 16));
         return Ok(report);
     } else if r.mode == "suggest" {
         let mut proposed = vec![];
@@ -584,7 +669,18 @@ pub fn spawn(cfg: Arc<Config>) {
 }
 
 /// `minisoc review`: run now, print the report.
-pub fn run_cli(cfg: &Config, dry_run: bool, as_json: bool) -> Result<(), String> {
+pub fn run_cli(cfg: &Config, dry_run: bool, show_input: bool, as_json: bool) -> Result<(), String> {
+    if show_input {
+        // Exactly what a review would send (redacted), no request.
+        let store = crate::ctl::open_store(cfg)?;
+        let mut fm = FilterManager::from_config(cfg);
+        fm.reload(true);
+        let ctx = Context::gather(cfg, &store, &fm)?;
+        let data = input(cfg, &ctx, &fm);
+        println!("{}", serde_json::to_string_pretty(&data).unwrap_or_default());
+        eprintln!("{} bytes", data.to_string().len());
+        return Ok(());
+    }
     if !cfg.ai.enable {
         return Err("AI is disabled (services.minisoc.ai.enable)".into());
     }
@@ -727,6 +823,16 @@ mod tests {
         // Source-wide rules are refused.
         let wide = json!({"changes": [{"action": "create", "confidence": 1.0, "match": {"source": "fapolicyd", "event_type": "fapolicyd_would_deny"}}]});
         assert!(check(&cfg, &ctx, &wide).0.is_empty());
+        // A detection silenced for every program: refused.
+        let title = json!({"changes": [{"action": "create", "confidence": 1.0, "match": {
+            "source": "fapolicyd", "event_type": "fapolicyd_would_deny", "message": {"prefix": "fapolicyd would deny execute"}}}]});
+        assert!(check(&cfg, &ctx, &title).1[0]["error"].as_str().unwrap().contains("pinning the object"));
+        // A severity from the model is ignored: MiniSOC injects its own.
+        let sev = json!({"changes": [{"action": "create", "confidence": 0.9, "match": {
+            "source": "fapolicyd", "event_type": "fapolicyd_would_deny", "severity": "critical",
+            "fields": {"exe": "/tmp/x/tool"}}}]});
+        let ok = check(&cfg, &ctx, &sev).0;
+        assert_eq!(ok[0].rule.as_ref().unwrap()["match"]["severity"]["in"], json!(["info", "low", "medium"]));
     }
 
     #[test]
@@ -757,6 +863,32 @@ mod tests {
         apply(&cfg, &fm, &ok).unwrap();
         let text = std::fs::read_to_string(cfg.ai_filter_file()).unwrap();
         assert!(!text.contains("ai-quiet") && text.contains("ai-busy"));
+    }
+
+    #[test]
+    fn a_too_wide_rule_can_be_removed_at_once() {
+        let d = tmp("wide");
+        let cfg = config("http://127.0.0.1:9", &d);
+        let store = Store::open(&cfg.db_path()).unwrap();
+        filters::write_rules(&cfg.ai_filter_file(), &[
+            json!({"id": "ai-title", "match": {"source": "rustinel", "event_type": "sigma_match",
+                   "message": {"prefix": "Execution Of Script Located"}}}),
+        ], filters::AI_HEADER, None, 5).unwrap();
+        let mut fm = FilterManager::from_config(&cfg);
+        fm.reload(true);
+        store.sync_rule_stats(&fm.ruleset).unwrap();
+        for i in 0..9 {
+            store.upsert(&alert(&format!("/y{i}"), i), Some("ai-title")).unwrap();
+        }
+        // Young and busy, but it silences a whole detection: removable now.
+        let ctx = Context::gather(&cfg, &store, &fm).unwrap();
+        let del = json!({"changes": [{"action": "delete", "id": "ai-title", "confidence": 0.9}]});
+        assert_eq!(check(&cfg, &ctx, &del).0.len(), 1);
+        // And the code removes it by itself, even with the provider down.
+        let rep = run(&cfg, &store, false).unwrap();
+        assert!(rep["error"].is_string(), "{rep}");
+        assert_eq!(rep["applied"][0]["id"], "ai-title", "{rep}");
+        assert!(!std::fs::read_to_string(cfg.ai_filter_file()).unwrap().contains("ai-title"));
     }
 
     #[test]

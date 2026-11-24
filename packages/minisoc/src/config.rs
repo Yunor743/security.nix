@@ -122,6 +122,10 @@ pub struct AiCfg {
     pub api_key_file: Option<String>,
     /// Sending (redacted) events to a non-local endpoint must be opted in.
     pub allow_remote: bool,
+    /// Reasoning effort for models that "think" (low | medium | high), passed
+    /// to OpenRouter (`reasoning.effort`) and OpenAI (`reasoning_effort`).
+    /// Their reasoning counts in the output budget. None: provider default.
+    pub reasoning_effort: Option<String>,
     pub analysis: AnalysisCfg,
     pub limits: LimitsCfg,
     pub privacy: PrivacyCfg,
@@ -143,6 +147,7 @@ impl Default for AiCfg {
             endpoint: None,
             api_key_file: None,
             allow_remote: false,
+            reasoning_effort: None,
             analysis: AnalysisCfg::default(),
             limits: LimitsCfg::default(),
             privacy: PrivacyCfg::default(),
@@ -305,6 +310,12 @@ pub struct FilterReviewCfg {
     pub max_changes: usize,
     pub minimum_confidence: f64,
     pub backup_before_write: bool,
+    /// Output budget of a review reply (a whole rule list), at least the
+    /// analysis one.
+    pub max_output_tokens: u32,
+    /// Overrides `ai.reasoning_effort` for reviews (large inputs make
+    /// reasoning models think long).
+    pub reasoning_effort: Option<String>,
 }
 
 impl Default for FilterReviewCfg {
@@ -320,6 +331,8 @@ impl Default for FilterReviewCfg {
             max_changes: 5,
             minimum_confidence: 0.7,
             backup_before_write: true,
+            max_output_tokens: 16384,
+            reasoning_effort: None,
         }
     }
 }

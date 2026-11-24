@@ -119,6 +119,12 @@ fn request(
             if provider == "openai" {
                 body["response_format"] = json!({"type": "json_object"});
             }
+            if let Some(e) = &cfg.reasoning_effort {
+                match provider {
+                    "openrouter" => body["reasoning"] = json!({"effort": e}),
+                    _ => body["reasoning_effort"] = json!(e),
+                }
+            }
             (url, body)
         }
         "anthropic" => {

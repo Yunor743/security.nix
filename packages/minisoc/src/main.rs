@@ -93,6 +93,9 @@ enum Cmd {
         /// Show the changes without applying nor proposing them
         #[arg(long)]
         dry_run: bool,
+        /// Print the (redacted) data a review sends to the model, no request
+        #[arg(long)]
+        show_input: bool,
         #[arg(long)]
         json: bool,
     },
@@ -217,7 +220,11 @@ fn main() {
             id: None, reason, ..
         } => ctl::close_all_fp(&cfg, reason.as_deref()),
         Cmd::Reopen { id } => ctl::restore(&cfg, &id),
-        Cmd::Review { dry_run, json } => ai::review::run_cli(&cfg, dry_run, json),
+        Cmd::Review {
+            dry_run,
+            show_input,
+            json,
+        } => ai::review::run_cli(&cfg, dry_run, show_input, json),
         Cmd::Analyze { id } => ctl::analyze(&cfg, &id),
         Cmd::Explain { id, json } => ctl::explain(&cfg, &id, json),
         Cmd::Filter { cmd } => match cmd {

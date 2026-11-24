@@ -249,6 +249,7 @@ let
       inherit (cfg.ai) provider model endpoint;
       api_key_file = cfg.ai.apiKeyFile;
       allow_remote = cfg.ai.allowRemote;
+      reasoning_effort = cfg.ai.reasoningEffort;
       analysis = {
         inherit (cfg.ai.analysis) enabled;
         auto_analyze = cfg.ai.analysis.autoAnalyze;
@@ -301,6 +302,8 @@ let
         max_changes = maxChanges;
         minimum_confidence = minimumConfidence;
         backup_before_write = backupBeforeWrite;
+        max_output_tokens = maxOutputTokens;
+        reasoning_effort = reasoningEffort;
       };
       prompts = lib.filterAttrs (_: v: v != null) (
         lib.genAttrs promptNames (n: if promptPath n == null then null else "${promptPath n}")
@@ -593,6 +596,23 @@ in
           endpoint. Without it only loopback endpoints (e.g. Ollama) work.
         '';
       };
+      reasoningEffort = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.enum [
+            "low"
+            "medium"
+            "high"
+          ]
+        );
+        default = null;
+        description = ''
+          Reasoning effort of models that "think" before answering, passed to
+          OpenRouter (`reasoning.effort`) and OpenAI-style APIs
+          (`reasoning_effort`); `null` keeps the provider default. Their
+          reasoning counts in `limits.maxOutputTokens`: lower it when replies
+          are truncated.
+        '';
+      };
       prompt = lib.mkOption {
         type = lib.types.nullOr lib.types.lines;
         default = null;
@@ -786,6 +806,22 @@ in
         backupBeforeWrite = lib.mkOption {
           type = lib.types.bool;
           default = true;
+        };
+        maxOutputTokens = lib.mkOption {
+          type = lib.types.ints.positive;
+          default = 16384;
+          description = "Output budget of a review reply (at least `limits.maxOutputTokens`).";
+        };
+        reasoningEffort = lib.mkOption {
+          type = lib.types.nullOr (
+            lib.types.enum [
+              "low"
+              "medium"
+              "high"
+            ]
+          );
+          default = null;
+          description = "Overrides `ai.reasoningEffort` for reviews: their large input makes reasoning models think long (and reasoning counts in the output budget).";
         };
       };
 
