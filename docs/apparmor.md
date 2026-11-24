@@ -33,6 +33,7 @@ files do not load on NixOS. `packages/apparmor-d` builds them properly:
 
 | Problem | Fix |
 |---|---|
+| Programs apparmor.d expects from the stock AppArmor package (`runc`, `crun`, `podman`: unconfined stubs) are absent; a `px` to them is denied once enforced | The stock unconfined profiles apparmor.d does not define are added, attached in the store too (`stock/`). |
 | The profiles need apparmor.d's preprocessor (ABI conversion, directives, attachments), and NixOS is not one of its distributions | `prebuild` is built from source and run for a `nixos` distribution added by a small patch (same exclusions as Arch, plus pacman). |
 | Programs are not in `/usr/bin`: AppArmor matches the **resolved** path, `/nix/store/<hash>-pkg/bin/foo` | `@{bin}`, `@{sbin}` and `@{lib}` also cover `/nix/store/*/…` and the setuid wrappers `/run/wrappers/wrappers.*`, both in the tunables and in the values the preprocessor uses to write profile attachments (`profile ls /{{,usr/}bin/ls,nix/store/*/bin/ls,…}`). |
 | Files are read through `/etc → /etc/static → /nix/store` and `/run/current-system/sw` | Every profile may read the store and map its programs and libraries (`abstractions/base{,-strict}.d/nixos`). The store is world-readable anyway. |
@@ -104,6 +105,17 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
 - VM test `apparmor-d`: 1982 profiles loaded (sub-profiles included), `top`
   runs as `top (enforce)` from the store, an enforced local override denies,
   a reload keeps everything, the cache is used.
+- `owned` in **enforce** mode (Hyprland, SDDM, Home Manager, Docker,
+  impermanence, with fapolicyd enforcing): boots, graphical login, apps
+  (kitty, Nautilus with gvfs FUSE), Docker containers, Nix builds, scp; the
+  remaining denials are tty inheritance by `pkill`/`hyprctl`. Getting there
+  needed NixOS fixes in the package (logind varlink socket of systemd ≥ 258,
+  the greeter's DRM/input devices passed by logind, session tty/log of
+  `start-hyprland`, `runc`/`crun` stubs from stock AppArmor so `px` to
+  container runtimes resolves, Docker CLI wrapper, fusermount setuid
+  wrapper, qemu-ga/spice-vdagentd/cups/tmpfiles/resolvconf paths…) and three
+  local overrides specific to that host (Ambxst config, `/.swapvol`, Docker
+  storage under `/nix/persist` seen through ``).
 - `owned` (Hyprland desktop, impermanence): boots in complain mode with all
   1595 profiles loaded; sshd/sshd-session, sddm and its helpers, dockerd,
   NetworkManager, sudo… run in their profiles, and a full boot plus desktop
@@ -112,6 +124,13 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
   the profiles loaded from the cache.
 
 ## Known limits
+
+- apparmor.d's `sftp-server` may only write to `~/Downloads` and sync
+  directories: `scp` elsewhere fails once enforced (widen it with
+  `localOverrides.sftp-server` if wanted).
+- Complain mode does not log everything enforce mode denies (repeated
+  events are not re-audited, `file_inherit`…): before enforcing a desktop,
+  keep a recovery path (previous generation) and test the login.
 
 - A package laid out differently than the cases above leaves its parent
   profile without a transition: in complain mode the activity is logged

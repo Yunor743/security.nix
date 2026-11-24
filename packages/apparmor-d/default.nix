@@ -105,6 +105,23 @@ buildGoModule (finalAttrs: {
     chmod -R u+w $tree
     cp -r .build/apparmor.d/. $tree/
 
+    # apparmor.d transitions to some profiles it expects from the stock
+    # AppArmor package (runc, crun, podman...: `flags=(unconfined)` stubs
+    # allowing user namespaces). Without them a `px` to these programs is
+    # denied once enforced (Docker cannot start containers). Add the stock
+    # unconfined profiles apparmor.d does not define, attached in the store
+    # too.
+    mkdir -p $tree/stock
+    for f in ${apparmor-profiles}/etc/apparmor.d/*; do
+      [ -f "$f" ] || continue
+      grep -q 'flags=(unconfined)' "$f" || continue
+      name=$(perl -ne 'print $1 and exit if /^profile\s+(\S+)/' "$f")
+      [[ "$name" =~ ^[A-Za-z0-9._+-]+$ ]] || continue
+      grep -rqE "^profile $name( |$)" .build/apparmor.d && continue
+      perl -pe 's{^(profile\s+\S+\s+)/(\S+?)/([^/\s{}]+)(\s)}{$1/\{$2/$3,nix/store/*/\{bin,sbin,libexec\}/$3\}$4}' \
+        "$f" > $tree/stock/$name
+    done
+
     find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" \
       | while read -r f; do
           case "$f" in
@@ -124,8 +141,55 @@ buildGoModule (finalAttrs: {
     }
     # bin/dockerd is a wrapper running libexec/docker/dockerd.
     fix dockerd '  priority=3 /nix/store/*/libexec/docker/dockerd rix,'
-    # The Wayland greeter of sddm runs on weston.
-    fix sddm '  priority=3 @{bin}/weston rix,'
+    # bin/docker is a wrapper running libexec/docker/docker.
+    fix docker '  priority=3 /nix/store/*/libexec/docker/docker rix,'
+    # The Wayland greeter of sddm runs on weston; it reads the input
+    # devices from sysfs and udev.
+    fix sddm '  priority=3 @{bin}/weston rix,
+      @{sys}/bus/ r,
+      @{sys}/devices/**/uevent r,
+      @{run}/udev/data/* r,
+      @{run}/systemd/sessions/* r,'
+    # Polkit agent for interactive authentication.
+    fix loginctl '  @{bin}/pkttyagent Px,
+      signal send set=(cont term winch) peer=pkttyagent,'
+    # NixOS openresolv notifies the resolvers it updates.
+    fix resolvconf '  capability kill,
+      capability sys_resource,
+      signal send,
+      @{run}/*/pid r,'
+    # NixOS keeps the CUPS configuration in /var/lib/cups (ServerRoot).
+    fix cupsd '  /var/lib/cups/{,**} rw,'
+    # NixOS tmpfiles rules for the Nix daemon.
+    fix systemd-tmpfiles '  /nix/var/{,**} r,
+      /lib64/ r,'
+    # systemd --user stops the session bus.
+    fix dbus-session '  signal receive peer=systemd-user,'
+    # systemd >= 258: logind serves a varlink socket (without it, logind
+    # exits at start: no user session).
+    fix systemd-logind '  @{run}/systemd/io.systemd.Login rw,'
+    # The NixOS service creates the agent socket itself.
+    fix spice-vdagentd '  owner @{run}/spice-vdagentd/spice-vdagent-sock rw,'
+    # NixOS runs qemu-ga with its state in /run/qemu-ga.
+    fix qemu-ga '  owner @{run}/qemu-ga/{,qga.state,qga.state.@{rand6}} rw,'
+    # Qt fallback runtime directory of the greeter, cgroup lookup.
+    fix sddm '  owner /tmp/runtime-sddm/{,**} rw,
+      @{PROC}/@{pid}/cgroup r,
+      # The DRM device of the greeter (weston), passed by logind: a
+      # disconnected path. Without it the greeter exits at once.
+      @{att}/dev/dri/card@{int} rw,
+      @{att}/dev/input/event@{int} rw,
+      @{sys}/class/{backlight,input}/ r,
+      owner @{run}/user/@{uid}/wayland-@{int}.lock rwk,'
+    # Session launcher: inherits the session tty and log from sddm.
+    fix start-hyprland '  /dev/tty@{int} rw,
+      owner @{user_share_dirs}/sddm/wayland-session.log w,'
+    # Input devices (PS/2 too), realtime priority of the compositor.
+    fix hyprland '  @{run}/udev/data/+serio:* r,
+      capability sys_nice,'
+    # nscd socket inherited from the caller.
+    fix resolvconf '  @{run}/nscd/socket rw,'
+    fix containerd '  @{sys}/fs/cgroup/**/cpu.max r,'
     # The stock authentication abstraction names unix_chkpwd by FHS path:
     # add the store and the setuid wrapper.
     sed -i 's|^\(\s*\)\(priority=[0-9]* \)\?/{,usr/}{,s}bin/unix_chkpwd Px,|&\n\1\2/nix/store/*/{,s}bin/unix_chkpwd Px,\n\1\2/run/wrappers/wrappers.*/unix_chkpwd Px,|' \
@@ -134,6 +198,9 @@ buildGoModule (finalAttrs: {
     # Same for the stock AppArmor abstractions (idempotent on the rest).
     find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
       | xargs -0 perl ${./nix-fhs.pl}
+    # The fusermount setuid wrapper runs the real program from the store
+    # (fusermount children of gvfsd-fuse, flatpak...).
+    printf '\n  # NixOS: setuid wrapper, then the store program\n  /nix/store/*/bin/fusermount{,3} rix,\n' >> $tree/abstractions/app/fusermount
     # coreutils is a multi-call binary: see nix-coreutils.pl.
     find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
       | xargs -0 perl ${./nix-coreutils.pl}

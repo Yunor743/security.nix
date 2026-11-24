@@ -130,9 +130,29 @@ No default rules — you must set `services.fapolicyd.rules` yourself.
 | `services.fapolicyd.extraRules` | attrsOf lines | `{}` | Extra rules merged on top of the profile |
 | `services.fapolicyd.settings` | attrsOf (bool\|int\|str) | sensible defaults | fapolicyd.conf key-value pairs |
 | `services.fapolicyd.trust` | lines | `""` | Content of `fapolicyd.trust` |
+| `services.fapolicyd.scanners` | listOf str | Rustinel if enabled | Executables allowed to read any file, never execute it (YARA/AV scanners) |
+| `services.fapolicyd.watchMountNamespaces` | bool | `true` | Mediate mount namespaces (`allow_filesystem_mark`); `false` lets containers run |
 | `services.fapolicyd.extraFilterRules` | listOf str | `[]` | Extra filter rules |
 | `services.fapolicyd.python3Path` | str | `${pkgs.python3.interpreter}` | Path to python3 for `%python3_path%` |
 | `services.fapolicyd.ldSoPath` | str | dynamic linker | Path to ld.so for `%ld_so_path%` |
+
+### Scanners and containers
+
+Every Nix-built ELF outside the store is `application/x-bad-elf` for
+fapolicyd (non-standard interpreter path), and the profiles deny *any*
+access to it, reading included: an enforcing fapolicyd would stop a scanner
+from reading exactly the binaries worth scanning. `scanners` adds
+`allow perm=open exe=<path> : all` before the profile rules; Rustinel is
+added when it is enabled.
+
+fapolicyd is not container aware. With `watchMountNamespaces = true`
+(default) it sees inside containers and judges their programs by the host
+policy under the container's own paths: the `nixos` profile denies them and
+Docker/Podman containers cannot start. With `false`, containers run, but
+nothing in a mount namespace is mediated (containers, systemd services with
+`PrivateTmp`/`ProtectSystem`, bwrap/Flatpak sandboxes); host sessions stay
+covered. Both behaviours are VM tests (`fapolicyd-scanners`,
+`fapolicyd-no-namespaces`).
 
 ## NixOS Patches
 
