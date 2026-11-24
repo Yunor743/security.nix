@@ -167,7 +167,10 @@ services.minisoc.sources = {
 
 | option | meaning |
 |---|---|
+| `type` | `file` (default) or `journald` |
 | `paths` | files or globs; files created later are picked up |
+| `journald.matches` | journal fields and values (`{ _SYSTEMD_UNIT = [ "sshd.service" ]; }`) |
+| `transform` | VRL run after parsing: set `.parsed.message`/`severity`/`event_type`, or `abort` to drop |
 | `parser` | `json`, `regex`, `grok`, `syslog`, `raw` |
 | `pattern` | regex / grok pattern |
 | `normalizer` | `generic` (default) or `rustinel` |
@@ -183,6 +186,47 @@ Without `mapping`, the generic normalizer looks for `@timestamp`,
 Flat dotted keys (ECS: `{"process.name": …}`) and nested objects both work.
 Numeric severities: 0–7 are syslog levels, larger numbers use the ECS 0–100
 scale.
+
+### Journal sources
+
+With `type = "journald"`, each journal entry selected by `journald.matches`
+is one line (`MESSAGE`); the collector joins the `systemd-journal` group.
+A `transform` turns it into an alert and drops what is not one:
+
+```nix
+services.minisoc.sources.sshd-failures = {
+  type = "journald";
+  journald.matches._SYSTEMD_UNIT = [ "sshd.service" ];
+  parser = "raw";
+  readFrom = "end";
+  transform = ''
+    if !contains(.raw, "Failed password") { abort }
+    .parsed.severity = "medium"
+    .parsed.event_type = "ssh_failed_password"
+  '';
+};
+```
+
+### Access denials of AppArmor, SELinux and fapolicyd
+
+Enabled automatically with the module they watch
+(`services.minisoc.integrations.{apparmor,selinux,fapolicyd}.enable`). A
+denial becomes an alert:
+
+| source | example message | severity |
+|---|---|---|
+| `apparmor` | `AppArmor denied open /root/secret — aa-probe (profile x)` | medium |
+| `selinux` | `SELinux denied read on file shadow — cat (user_t → shadow_t)` | medium |
+| `fapolicyd` | `fapolicyd denied execute /tmp/x — …/bin/bash (rule 4)` | high |
+
+The parsed fields (`profile`, `operation`, `comm`, `scontext`, `exe`,
+`path`…) can be used in filter rules (`fields:`).
+
+Only enforced denials are alerts. Complain/permissive modes log what they
+would deny without denying it; `integrations.<name>.wouldBe = true` adds
+those as `low` alerts (`… would deny …`). For fapolicyd, permissive mode is
+taken from `services.fapolicyd.permissive`, since it logs the same line.
+apparmor.d in complain mode logs a lot: keep `wouldBe` off for AppArmor.
 
 Planned sources (ClamAV, Snort, Suricata, auditd, Elastic Agent, CrowdSec)
 need no code: declare them as above once the tool writes its log.
