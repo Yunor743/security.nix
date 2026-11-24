@@ -190,6 +190,10 @@ buildGoModule (finalAttrs: {
     # nscd socket inherited from the caller.
     fix resolvconf '  @{run}/nscd/socket rw,'
     fix containerd '  @{sys}/fs/cgroup/**/cpu.max r,'
+    # NixOS keeps the USBGuard rules and IPC ACLs in /var/lib/usbguard.
+    fix usbguard-daemon '  /var/lib/usbguard/{,**} r,
+      /var/lib/usbguard/*.conf rw,
+      /var/lib/usbguard/IPCAccessControl.d/{,**} rw,'
     # The stock authentication abstraction names unix_chkpwd by FHS path:
     # add the store and the setuid wrapper.
     sed -i 's|^\(\s*\)\(priority=[0-9]* \)\?/{,usr/}{,s}bin/unix_chkpwd Px,|&\n\1\2/nix/store/*/{,s}bin/unix_chkpwd Px,\n\1\2/run/wrappers/wrappers.*/unix_chkpwd Px,|' \

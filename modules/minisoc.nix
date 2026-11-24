@@ -415,6 +415,24 @@ in
       };
     };
 
+    integrations.usbguard.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.security.usbguard.enable or false;
+      defaultText = lib.literalExpression "config.security.usbguard.enable";
+      description = ''
+        Alert on USB devices blocked or rejected by USBGuard (security.usbguard),
+        and in learn mode on those only the permissive default let in
+        (severity `low`: they would be blocked once enforced).
+      '';
+    };
+
+    integrations.crowdsec.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.services.crowdsec.enable or false;
+      defaultText = lib.literalExpression "config.services.crowdsec.enable";
+      description = "Alert on CrowdSec decisions: bans (`high`), simulated ones (`medium`).";
+    };
+
     integrations.fapolicyd = {
       enable = lib.mkOption {
         type = lib.types.bool;
@@ -948,6 +966,24 @@ in
               transform = lib.mkDefault (
                 mlib.macTransforms.selinux { inherit (cfg.integrations.selinux) wouldBe; }
               );
+            };
+          })
+          (lib.mkIf cfg.integrations.usbguard.enable {
+            usbguard = {
+              type = "journald";
+              journald.matches._SYSTEMD_UNIT = lib.mkDefault [ "usbguard-events.service" ];
+              parser = "raw";
+              readFrom = lib.mkDefault "end";
+              transform = lib.mkDefault mlib.usbguardTransform;
+            };
+          })
+          (lib.mkIf cfg.integrations.crowdsec.enable {
+            crowdsec = {
+              type = "journald";
+              journald.matches._SYSTEMD_UNIT = lib.mkDefault [ "crowdsec.service" ];
+              parser = "raw";
+              readFrom = lib.mkDefault "end";
+              transform = lib.mkDefault mlib.crowdsecTransform;
             };
           })
           (lib.mkIf cfg.integrations.fapolicyd.enable {

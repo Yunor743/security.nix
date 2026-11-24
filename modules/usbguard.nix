@@ -1,0 +1,342 @@
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+
+# USBGuard with a workstation-friendly policy, on top of nixpkgs'
+# services.usbguard (daemon unit and its hardening):
+#
+# - `mode = "learn"` lets every device in and logs, per device, whether the
+#   enforced policy would have blocked it; `enforce` blocks what no rule
+#   allows. Start in learn mode, read the log (or MiniSOC), then enforce.
+# - The rules file stays writable, so `usbguard allow-device -p` and the
+#   policy generated for the devices present at first start persist. A
+#   NixOS-managed block is rewritten at the top of it on every start:
+#   devices declared in Nix, hubs, rejected interface classes (e.g. mass
+#   storage). The first matching rule wins, so managed rejections come first.
+# - Desktop notifications (usbguard-notifier) and IPC rights for a group.
+
+let
+  cfg = config.security.usbguard;
+
+  begin = "# --- managed by NixOS (security.usbguard): rewritten at every start ---";
+  end = "# --- end of the NixOS block; rules below are kept (learned, usbguard allow-device -p) ---";
+
+  # `usbguard` rule for one declared device.
+  deviceRule =
+    d:
+    lib.concatStringsSep " " (
+      [ "allow id ${d.id}" ]
+      ++ lib.optional (d.serial != null) "serial ${builtins.toJSON d.serial}"
+      ++ lib.optional (d.name != null) "name ${builtins.toJSON d.name}"
+      ++ lib.optional (d.hash != null) "hash ${builtins.toJSON d.hash}"
+      ++ lib.optional (d.viaPort != null) "via-port ${builtins.toJSON d.viaPort}"
+    )
+    + lib.optionalString (d.comment != "") "  # ${d.comment}";
+
+  managed = pkgs.writeText "usbguard-managed-rules" (
+    lib.concatStringsSep "\n" (
+      [ begin ]
+      # Rejections first: they win over any allow rule below.
+      ++ map (c: "reject with-interface one-of { ${c} }") cfg.rejectInterfaces
+      ++ lib.optional cfg.allowHubs "allow with-interface equals { 09:00:* }"
+      ++ lib.optional cfg.allowHid "allow with-interface one-of { 03:00:01 03:01:01 03:00:02 03:01:02 }"
+      ++ map deviceRule cfg.allowedDevices
+      ++ lib.optional (cfg.extraRules != "") cfg.extraRules
+      ++ [ end ]
+    )
+    + "\n"
+  );
+
+  ruleFile = "/var/lib/usbguard/rules.conf";
+
+  # Rewrite the managed block, keep the rest; generate the policy of the
+  # present devices once (first start, nothing learned yet).
+  prepare = pkgs.writeShellScript "usbguard-prepare-rules" ''
+    set -eu
+    export PATH=${
+      lib.makeBinPath [
+        pkgs.coreutils
+        pkgs.gawk
+        pkgs.gnugrep
+        cfg.package
+      ]
+    }
+    install -d -m 0700 /var/lib/usbguard
+    touch ${ruleFile}
+    chmod 0600 ${ruleFile}
+    learned=$(awk -v b='${begin}' -v e='${end}' '$0 == b { skip = 1 } !skip { print } $0 == e { skip = 0 }' ${ruleFile})
+    ${lib.optionalString cfg.allowPresentDevices ''
+      if [ -z "$(printf '%s' "$learned" | grep -v '^\s*\(#\|$\)' || true)" ] \
+         && [ ! -e /var/lib/usbguard/.present-devices-learned ]; then
+        learned="# Devices present at first start (usbguard generate-policy, $(date -u +%FT%TZ))
+      $(usbguard generate-policy --no-hashes)"
+        touch /var/lib/usbguard/.present-devices-learned
+      fi
+    ''}
+    tmp=$(mktemp ${ruleFile}.XXXXXX)
+    { cat ${managed}; printf '%s\n' "$learned"; } > "$tmp"
+    chmod 0600 "$tmp"
+    mv "$tmp" ${ruleFile}
+  '';
+
+  # One journal line per policy decision, from the IPC event stream (the
+  # audit records do not say whether a rule or the default target decided):
+  #   decision=allow by=default mode=learn id=0627:0001 name="..." port="1-5" ...
+  # In learn mode, `by=default` + `decision=allow` = would be blocked.
+  eventsScript = pkgs.writeShellScript "usbguard-events" ''
+    exec ${cfg.package}/bin/usbguard watch | ${pkgs.gawk}/bin/awk -v mode=${cfg.mode} '
+      function field(rule, key,    m) {
+        if (match(rule, " " key " \"[^\"]*\"")) {
+          m = substr(rule, RSTART + length(key) + 2, RLENGTH - length(key) - 2)
+          return m
+        }
+        return "\"\""
+      }
+      /^\[device\] PolicyApplied:/ { inpol = 1; target = ""; rule = ""; next }
+      /^\[/ { inpol = 0 }
+      inpol && /^ target_new=/ { target = substr($0, 13) }
+      inpol && /^ device_rule=/ { rule = substr($0, 14) }
+      inpol && /^ rule_id=/ {
+        rid = substr($0, 10)
+        # 4294967294 and above: no rule matched, the default target applied.
+        by = (rid + 0 >= 4294967290) ? "default" : "rule"
+        id = ""
+        if (match(rule, / id [0-9a-f]{4}:[0-9a-f]{4}/)) id = substr(rule, RSTART + 4, 9)
+        iface = ""
+        if (match(rule, /with-interface (\{[^}]*\}|[0-9a-f*:]+)/)) iface = substr(rule, RSTART + 15, RLENGTH - 15)
+        printf "decision=%s by=%s rule_id=%s mode=%s id=%s name=%s serial=%s port=%s interfaces=\"%s\"\n", target, by, rid, mode, id, field(rule, "name"), field(rule, "serial"), field(rule, "via-port"), iface
+        fflush()
+        inpol = 0
+      }
+    '
+  '';
+
+  daemonConf = pkgs.writeText "usbguard-daemon.conf" ''
+    # generated by security.nix (security.usbguard, mode ${cfg.mode})
+    RuleFile=${ruleFile}
+    ImplicitPolicyTarget=${if cfg.mode == "enforce" then cfg.blockTarget else "allow"}
+    PresentDevicePolicy=${cfg.presentDevicePolicy}
+    PresentControllerPolicy=keep
+    InsertedDevicePolicy=apply-policy
+    RestoreControllerDeviceState=false
+    DeviceManagerBackend=uevent
+    IPCAllowedUsers=root
+    IPCAllowedGroups=${lib.concatStringsSep " " cfg.ipcGroups}
+    IPCAccessControlFiles=/var/lib/usbguard/IPCAccessControl.d/
+    DeviceRulesWithPort=false
+    # As in nixpkgs: audit records still reach the journal.
+    AuditBackend=FileAudit
+    AuditFilePath=/dev/null
+  '';
+in
+{
+  options.security.usbguard = {
+    enable = lib.mkEnableOption ''
+      USBGuard (USB device authorization) with a workstation-friendly
+      policy: learn then enforce, devices present at first start allowed,
+      declarative allow-list, interface classes rejected, desktop
+      notifications'';
+
+    package = lib.mkPackageOption pkgs "usbguard" { };
+
+    mode = lib.mkOption {
+      type = lib.types.enum [
+        "learn"
+        "enforce"
+      ];
+      default = "learn";
+      description = ''
+        `learn`: every device is authorized; USBGuard still evaluates the
+        rules and logs which devices only got in by the permissive default
+        (they would be blocked once enforced). `enforce`: a device no rule
+        allows is blocked (`blockTarget`). Rejected interface classes
+        (`rejectInterfaces`) are rejected in both modes.
+      '';
+    };
+
+    blockTarget = lib.mkOption {
+      type = lib.types.enum [
+        "block"
+        "reject"
+      ];
+      default = "block";
+      description = "`block`: the device stays visible but unusable (can be allowed later); `reject`: logically removed.";
+    };
+
+    allowPresentDevices = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        On the first start with no learned rule, allow the devices plugged in
+        at that moment (`usbguard generate-policy`), so enforcing does not
+        lock out the keyboard of a desktop. Done once; persist
+        `/var/lib/usbguard` on an ephemeral root.
+      '';
+    };
+
+    presentDevicePolicy = lib.mkOption {
+      type = lib.types.enum [
+        "allow"
+        "block"
+        "reject"
+        "keep"
+        "apply-policy"
+      ];
+      default = "apply-policy";
+      description = "Treatment of devices already connected when the daemon starts.";
+    };
+
+    allowHubs = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Allow USB hubs (interface class 09): they carry no data, and blocking them hides everything behind.";
+    };
+
+    allowHid = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Allow any boot keyboard / mouse (HID boot interfaces). Convenient
+        when plugging new input devices, but a "BadUSB" device presents
+        itself as a keyboard: prefer `allowedDevices` or
+        `usbguard allow-device -p` per device.
+      '';
+    };
+
+    rejectInterfaces = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [
+        "08:*:*"
+        "e0:*:*"
+      ];
+      description = ''
+        Interface classes rejected whatever other rules say, in both modes
+        (evaluated first): e.g. `08:*:*` mass storage (no USB keys), `e0:*:*`
+        wireless controllers, `02:*:*` / `0a:*:*` USB network adapters.
+      '';
+    };
+
+    allowedDevices = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            id = lib.mkOption {
+              type = lib.types.strMatching "[0-9a-f]{4}:[0-9a-f*]{4}";
+              example = "046d:c52b";
+              description = "vendor:product (`usbguard list-devices`).";
+            };
+            serial = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+            };
+            name = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+            };
+            hash = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              description = "Device descriptor hash: pins this very device model and firmware.";
+            };
+            viaPort = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = null;
+              example = "1-2";
+            };
+            comment = lib.mkOption {
+              type = lib.types.str;
+              default = "";
+            };
+          };
+        }
+      );
+      default = [ ];
+      example = lib.literalExpression ''
+        [ { id = "046d:c52b"; name = "USB Receiver"; comment = "Logitech mouse"; } ]
+      '';
+      description = "Devices always allowed (written in the NixOS-managed block of the rules file).";
+    };
+
+    extraRules = lib.mkOption {
+      type = lib.types.lines;
+      default = "";
+      description = "Raw `usbguard-rules.conf(5)` rules appended to the managed block.";
+    };
+
+    ipcGroups = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ "wheel" ];
+      description = "Groups allowed to list / allow / block devices (`usbguard` CLI, notifier).";
+    };
+
+    notifier.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.services.graphical-desktop.enable or false;
+      defaultText = lib.literalExpression "config.services.graphical-desktop.enable";
+      description = "Desktop notification for every device decision (usbguard-notifier, user service of the `ipcGroups` members).";
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    services.usbguard = {
+      enable = true;
+      inherit (cfg) package;
+      ruleFile = ruleFile;
+      IPCAllowedGroups = cfg.ipcGroups;
+    };
+
+    systemd.services.usbguard = {
+      serviceConfig = {
+        ExecStartPre = [ "+${prepare}" ];
+        # Our own daemon configuration (mode, rule file); nixpkgs' unit
+        # hardening is kept.
+        ExecStart = lib.mkForce "${cfg.package}/bin/usbguard-daemon -P -k -c ${daemonConf}";
+      };
+      restartTriggers = [
+        daemonConf
+        managed
+      ];
+    };
+
+    systemd.services.usbguard-events = {
+      description = "USBGuard decisions in the journal (one line per device)";
+      wantedBy = [
+        "usbguard.service"
+        "multi-user.target"
+      ];
+      after = [ "usbguard.service" ];
+      bindsTo = [ "usbguard.service" ];
+      restartTriggers = [ eventsScript ];
+      serviceConfig = {
+        ExecStart = eventsScript;
+        Restart = "always";
+        RestartSec = 2;
+        DynamicUser = false;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        NoNewPrivileges = true;
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        CapabilityBoundingSet = "";
+      };
+    };
+
+    systemd.user.services.usbguard-notifier = lib.mkIf cfg.notifier.enable {
+      description = "USBGuard desktop notifications";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" ];
+      serviceConfig = {
+        ExecStart = "${pkgs.usbguard-notifier}/bin/usbguard-notifier";
+        Restart = "on-failure";
+        RestartSec = 10;
+      };
+    };
+
+    environment.systemPackages = [ cfg.package ];
+  };
+}

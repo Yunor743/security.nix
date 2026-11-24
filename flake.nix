@@ -62,6 +62,8 @@
               minisocTests = {
                 minisoc-vector = pkgs.callPackage ./checks/minisoc-vector-test.nix { };
                 apparmor-d = pkgs.callPackage ./checks/apparmor-test.nix { inherit self; };
+                usbguard = pkgs.callPackage ./checks/usbguard-test.nix { inherit self; };
+                crowdsec-eval = pkgs.callPackage ./checks/crowdsec-eval.nix { inherit self nixpkgs; };
                 # SELinux VM tests from nix-selinux (enforcing boots, zero denials).
                 selinux-enforcing = pkgs.testers.runNixOSTest {
                   imports = [ ./checks/selinux/enforcing.nix ];
@@ -105,6 +107,8 @@
         minisoc = import ./modules/minisoc.nix;
         apparmor = import ./modules/apparmor.nix;
         selinux = import ./modules/selinux;
+        usbguard = import ./modules/usbguard.nix;
+        crowdsec = import ./modules/crowdsec.nix;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
       };

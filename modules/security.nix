@@ -7,5 +7,7 @@
     ./minisoc.nix
     ./apparmor.nix
     ./selinux
+    ./usbguard.nix
+    ./crowdsec.nix
   ];
 }

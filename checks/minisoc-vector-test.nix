@@ -43,6 +43,8 @@ let
           permissive = false;
         }
       );
+      mac_usbguard = mac mlib.usbguardTransform;
+      mac_crowdsec = mac mlib.crowdsecTransform;
       mac_fapolicyd_perm = mac (
         mlib.macTransforms.fapolicyd {
           wouldBe = false;
@@ -168,6 +170,42 @@ let
           assert_eq!(.parsed.severity, "high")
           assert_eq!(.parsed.message, "fapolicyd denied execute /tmp/evil — /run/current-system/sw/bin/bash (rule 9)")
         ''
+      )
+      (case "usbguard-reject" "parse_mac_usbguard"
+        ''decision=reject by=rule rule_id=1 mode=learn id=46f4:0001 name="QEMU USB HARDDRIVE" serial="1-0000:00:02.1:00.0-4" port="2-4" interfaces="08:06:50 "''
+        ''
+          assert_eq!(.parsed.severity, "medium")
+          assert_eq!(.parsed.event_type, "usbguard_reject")
+          assert_eq!(.parsed.message, "USBGuard rejected USB device QEMU USB HARDDRIVE (46f4:0001) on port 2-4")
+        ''
+      )
+      (case "usbguard-learn-would-block" "parse_mac_usbguard"
+        ''decision=allow by=default rule_id=4294967294 mode=learn id=0627:0001 name="QEMU USB Keyboard" serial="x" port="1-5" interfaces="03:01:01 "''
+        ''
+          assert_eq!(.parsed.severity, "low")
+          assert_eq!(.parsed.event_type, "usbguard_would_block")
+        ''
+      )
+      (none "usbguard-allowed-by-rule-dropped" "parse_mac_usbguard"
+        ''decision=allow by=rule rule_id=8 mode=enforce id=0627:0001 name="QEMU USB Tablet" serial="x" port="1-1" interfaces="03:00:00 "''
+      )
+      (case "crowdsec-simulated" "parse_mac_crowdsec"
+        ''time="2026-11-24T16:44:08+01:00" level=info msg="(owned/crowdsec) crowdsecurity/ssh-bf by ip 203.0.113.7 (/0) : (simulated alert)240m ban on Ip 203.0.113.7" module=db''
+        ''
+          assert_eq!(.parsed.severity, "medium")
+          assert_eq!(.parsed.message, "CrowdSec: 203.0.113.7 (/0) triggered crowdsecurity/ssh-bf and would get a 240m ban (simulation)")
+        ''
+      )
+      (case "crowdsec-ban" "parse_mac_crowdsec"
+        ''time="2026-11-24T16:44:08+01:00" level=info msg="(owned/crowdsec) crowdsecurity/ssh-bf by ip 198.51.100.4 (FR/1234) : 4h ban on Ip 198.51.100.4" module=db''
+        ''
+          assert_eq!(.parsed.severity, "high")
+          assert_eq!(.parsed.event_type, "crowdsec_decision")
+          assert_eq!(.parsed.ip, "198.51.100.4")
+        ''
+      )
+      (none "crowdsec-other-dropped" "parse_mac_crowdsec"
+        ''time="2026-11-24T16:44:07+01:00" level=info msg="Ip 203.0.113.7 performed 'crowdsecurity/ssh-bf' (6 events over 283ms) at 2026"''
       )
       (none "fapolicyd-allow-dropped" "parse_mac_fapolicyd"
         "rule=1 dec=allow perm=open auid=0 pid=1 exe=/x : path=/y ftype=text/plain trust=1"

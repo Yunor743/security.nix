@@ -167,6 +167,64 @@ rec {
       '';
   };
 
+  # Device decisions of USBGuard (security.usbguard's usbguard-events lines):
+  # decision=reject by=rule rule_id=1 mode=learn id=46f4:0001 name="..." serial="..." port="2-4" interfaces="08:06:50 "
+  # Kept: blocked / rejected devices, and in learn mode the devices only the
+  # permissive default let in (they would be blocked once enforced).
+  usbguardTransform = ''
+    kv = parse_key_value(.raw) ?? {}
+    decision = string(kv.decision) ?? ""
+    by = string(kv.by) ?? ""
+    name = string(kv.name) ?? "?"
+    id = string(kv.id) ?? "?"
+    port = string(kv.port) ?? "?"
+    verb = ""
+    if decision == "allow" && by == "default" {
+      .parsed = {"event_type": "usbguard_would_block", "severity": "low"}
+      verb = "allowed (learn mode; would be blocked)"
+    } else if decision == "block" || decision == "reject" {
+      .parsed = {"event_type": "usbguard_" + decision, "severity": "medium"}
+      verb = "rejected"
+      if decision == "block" { verb = "blocked" }
+    } else {
+      abort
+    }
+    .parsed.message = join!(["USBGuard", verb, "USB device", name, "(" + id + ")", "on port", port], " ")
+    .parsed.decision = decision
+    .parsed.by = by
+    .parsed.device_id = id
+    .parsed.name = name
+    .parsed.serial = kv.serial
+    .parsed.port = port
+    .parsed.interfaces = kv.interfaces
+  '';
+
+  # CrowdSec decisions (crowdsec.service, module db), e.g.
+  # msg="(host/crowdsec) crowdsecurity/ssh-bf by ip 203.0.113.7 (FR/1234) : (simulated alert)240m ban on Ip 203.0.113.7"
+  crowdsecTransform = ''
+    kv = parse_key_value(.raw) ?? {}
+    msg = string(kv.msg) ?? ""
+    m = parse_regex(msg, r'^\((?P<machine>[^)]*)\) (?P<scenario>\S+) by ip (?P<ip>\S+) \((?P<geo>[^)]*)\) : (?P<sim>\(simulated alert\))?(?P<duration>\S+) (?P<action>\w+) on (?P<scope>\w+) (?P<value>.+)$') ?? {}
+    if !exists(m.scenario) { abort }
+    sim = string(m.sim) ?? ""
+    simulated = sim != ""
+    .parsed = {"event_type": "crowdsec_decision", "severity": "high"}
+    verb = string!(m.duration) + " " + string!(m.action)
+    if simulated {
+      .parsed = {"event_type": "crowdsec_simulated", "severity": "medium"}
+      verb = "would get a " + verb + " (simulation)"
+    } else {
+      verb = "gets a " + verb
+    }
+    .parsed.message = join!(["CrowdSec:", string!(m.ip), "(" + string!(m.geo) + ")", "triggered", string!(m.scenario), "and", verb], " ")
+    .parsed.scenario = m.scenario
+    .parsed.ip = m.ip
+    .parsed.geo = m.geo
+    .parsed.action = m.action
+    .parsed.duration = m.duration
+    .parsed.simulated = simulated
+  '';
+
   mkVectorConfig =
     {
       sources,

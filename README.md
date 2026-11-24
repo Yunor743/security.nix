@@ -50,6 +50,8 @@ NixOS packages and modules for endpoint security and detection
 | `services.minisoc` | MiniSOC: Vector collector, per-user engine, alert_filter.yaml, optional AI (SOC N1) |
 | `security.apparmor-d` | AppArmor with the apparmor.d collection: global and per-profile modes, local overrides, cached loading |
 | `security.selinux` | SELinux (reference policy, labelled store, confined services, login contexts), from nix-selinux |
+| `security.usbguard` | USBGuard: learn then enforce, devices present at first start allowed, declarative allow-list, rejected interface classes, decision log ([docs](docs/usbguard.md)) |
+| `security.crowdsec` | CrowdSec: local engine + firewall bouncer, sources of the enabled services, simulation then enforce, progressive bans, central API opt-in ([docs](docs/crowdsec.md)) |
 
 Home Manager: `homeManagerModules.minisoc` (`programs.minisoc`, the MiniSOC widget).
 
