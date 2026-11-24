@@ -96,8 +96,14 @@ ColumnLayout {
                     RowLayout {
                         Text { text: modelData.id; color: modelData.enabled ? m.theme.fg : m.theme.muted; font.family: m.theme.mono; font.pixelSize: m.theme.fontSize - 1; Layout.fillWidth: true; elide: Text.ElideRight }
                         Text { visible: modelData.owner === "ai"; text: "AI"; color: m.theme.ai; font.family: m.theme.mono; font.pixelSize: m.theme.fontSize - 2 }
-                        // Alerts excluded since the rule was created or last modified.
-                        Text { text: modelData.enabled ? modelData.hits + " filtered since " + m.since(modelData.since) : "disabled"; color: m.theme.muted; font.family: m.theme.mono; font.pixelSize: m.theme.fontSize - 2 }
+                        // Alerts excluded since the rule was created or last
+                        // modified, and over the recent window.
+                        Text {
+                            text: modelData.enabled
+                                  ? modelData.hits + " since " + m.since(modelData.since) + " · " + (modelData.recent_hits || 0) + " in " + (modelData.recent_days || 14) + " d"
+                                  : "disabled"
+                            color: m.theme.muted; font.family: m.theme.mono; font.pixelSize: m.theme.fontSize - 2
+                        }
                     }
                     Muted { text: (modelData.description ? modelData.description + "\n" : "") + JSON.stringify(modelData.match) }
                 }

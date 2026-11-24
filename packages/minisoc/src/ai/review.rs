@@ -64,6 +64,9 @@ pub struct Context {
     pub recent: Vec<(Event, bool, Option<String>)>,
     /// AI rules: id -> (spec, since, hits since the last change).
     pub ai_rules: BTreeMap<String, (Value, Option<String>, i64)>,
+    /// AI rules: id -> alerts excluded over the last `recent_days` days.
+    pub ai_recent: BTreeMap<String, i64>,
+    pub recent_days: i64,
     /// Match conditions of every other rule (duplicates are refused).
     pub other_matches: Vec<Value>,
 }
@@ -73,7 +76,7 @@ impl Context {
         let r = &cfg.ai.filter_review;
         let since = format_ts(chrono::Utc::now() - chrono::Duration::days(r.lookback_days.max(1)));
         let e = |x: rusqlite::Error| x.to_string();
-        let stats = store.filter_stats().map_err(e)?;
+        let stats = store.filter_stats(cfg.filter.recent_days).map_err(e)?;
         let ai_rules = fm
             .rules_of("ai")
             .into_iter()
@@ -89,6 +92,17 @@ impl Context {
                 )
             })
             .collect();
+        let ai_recent = fm
+            .rules_of("ai")
+            .into_iter()
+            .map(|rule| {
+                let n = stats
+                    .get(&rule.id)
+                    .and_then(|s| s["recent_hits"].as_i64())
+                    .unwrap_or(0);
+                (rule.id.clone(), n)
+            })
+            .collect();
         let other_matches = fm
             .ruleset
             .rules
@@ -101,6 +115,8 @@ impl Context {
             tp: store.closed_events("tp", true, &since, r.max_alerts).map_err(e)?,
             recent: store.recent_with_verdict(RECENT).map_err(e)?,
             ai_rules,
+            ai_recent,
+            recent_days: cfg.filter.recent_days.max(1),
             other_matches,
         })
     }
@@ -166,6 +182,7 @@ pub fn input(cfg: &Config, ctx: &Context, fm: &FilterManager) -> Value {
                 "enabled": spec.get("enabled").cloned().unwrap_or(json!(true)),
                 "last_change": since,
                 "excluded_since_last_change": hits,
+                "excluded_recently": ctx.ai_recent.get(id).copied().unwrap_or(0),
                 "matches_fp_closed": fp, "matches_tp_closed": tp,
             })
         })
@@ -185,6 +202,7 @@ pub fn input(cfg: &Config, ctx: &Context, fm: &FilterManager) -> Value {
         "limits": {
             "minimum_false_positives_per_rule": cfg.ai.filter_review.minimum_false_positives,
             "low_hits_threshold": cfg.ai.filter_review.low_hits_threshold,
+            "recent_window_days": ctx.recent_days,
             "minimum_rule_age_hours": cfg.ai.filter_review.minimum_rule_age_hours,
             "max_changes": cfg.ai.filter_review.max_changes,
         },
@@ -382,7 +400,7 @@ pub fn check(cfg: &Config, ctx: &Context, reply: &Value) -> (Vec<Checked>, Vec<V
                 }
                 "update" | "delete" => {
                     let id = c.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                    let (spec, since, hits) = ctx
+                    let (spec, since, _) = ctx
                         .ai_rules
                         .get(&id)
                         .ok_or(format!("'{id}' is not a rule of the AI file (user rules are never changed)"))?;
@@ -398,10 +416,13 @@ pub fn check(cfg: &Config, ctx: &Context, reply: &Value) -> (Vec<Checked>, Vec<V
                         ));
                     }
                     if action == "delete" {
-                        if *hits > r.low_hits_threshold && !unsafe_rule {
+                        // Judged on the recent window: a rule that was busy
+                        // once but no longer catches anything can go.
+                        let recent = ctx.ai_recent.get(&id).copied().unwrap_or(0);
+                        if recent > r.low_hits_threshold && !unsafe_rule {
                             return Err(format!(
-                                "still excludes {hits} alert(s) since its last change (> {})",
-                                r.low_hits_threshold
+                                "still excludes {recent} alert(s) over the last {} days (> {})",
+                                ctx.recent_days, r.low_hits_threshold
                             ));
                         }
                         Ok(Checked { action: action.into(), id, rule: None, reason, confidence })
@@ -860,6 +881,10 @@ mod tests {
         let (ok, rej) = check(&cfg, &ctx, &del);
         assert_eq!(ok.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["ai-quiet"]);
         assert!(rej[0]["error"].as_str().unwrap().contains("still excludes 5"), "{rej:?}");
+        // Busy long ago, silent over the recent window: it may go too.
+        store.conn.execute("UPDATE filter_hits_daily SET day = '2000-01-01'", []).unwrap();
+        let ctx2 = Context::gather(&cfg, &store, &fm).unwrap();
+        assert_eq!(check(&cfg, &ctx2, &del).0.len(), 2);
         apply(&cfg, &fm, &ok).unwrap();
         let text = std::fs::read_to_string(cfg.ai_filter_file()).unwrap();
         assert!(!text.contains("ai-quiet") && text.contains("ai-busy"));

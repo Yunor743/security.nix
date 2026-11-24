@@ -72,6 +72,8 @@ pub struct FilterCfg {
     /// Log, for every event, which rule conditions matched or failed.
     pub debug: bool,
     pub max_backups: usize,
+    /// Sliding window (days) of the per-rule "recent" counter.
+    pub recent_days: i64,
 }
 
 impl Default for FilterCfg {
@@ -84,6 +86,7 @@ impl Default for FilterCfg {
             seed: true,
             debug: false,
             max_backups: 20,
+            recent_days: 14,
         }
     }
 }
@@ -322,7 +325,7 @@ impl Default for FilterReviewCfg {
     fn default() -> Self {
         Self {
             mode: "off".into(),
-            interval_hours: 24.0,
+            interval_hours: 6.0,
             lookback_days: 30,
             max_alerts: 200,
             minimum_false_positives: 3,

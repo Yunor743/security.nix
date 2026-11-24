@@ -360,12 +360,19 @@ matched. `services.minisoc.filter.debug = true` logs this for every event
   `filter-backups/ai/` before each rewrite.
 
 **Counters.** Every rule shows how many alerts it excluded **since it was
-created or last modified** (`hits`, `since`), plus the stored alerts it hides
-now (`hidden`): in *Manage ▸ Rules*, `minisoc filter list` and
-`state.json`. Any change to a rule's definition (match, enabled,
-description…) restarts its counter at 0, so a rule that stops catching
-anything after a change is visible at once. The filter review uses these
-counters to retire useless AI rules.
+created or last modified** (`hits`, `since`), how many **over the last
+`filter.recentDays` days** (default 14, `recent_hits`), and the stored alerts
+it hides now (`hidden`): in *Manage ▸ Rules* (`12 since 24/11 14:22 · 3 in
+14 d`), `minisoc filter list` and `state.json`.
+
+- There is no periodic reset of the total. It restarts at 0 only when the
+  rule's definition changes (any key: match, enabled, description,
+  metadata…), so a rule that stops catching anything after a change is
+  visible at once; a removed rule's counters are forgotten.
+- The recent counter is kept per day and slides: a rule that was busy
+  months ago and catches nothing now shows a high total but `0 in 14 d`.
+  The filter review retires AI rules on this window. Day buckets older than
+  the retention (at least 90 days) are pruned.
 
 ## Permissions and data locations
 
@@ -644,11 +651,11 @@ the workstation.
 services.minisoc.ai.filterReview = {
   enable = true;
   mode = "suggest";           # or "automatic" (rewrites ai_filters.yaml)
-  interval = 24;              # hours; `minisoc review` runs one now
+  interval = 6;               # hours; `minisoc review` runs one now
   lookbackDays = 30;          # closures taken into account
   minimumFalsePositives = 3;  # FP closures a rule must cover
   minimumRuleAge = 72;        # hours before a rule may be changed / deleted
-  lowHitsThreshold = 2;       # a rule excluding <= this since its last change may go
+  lowHitsThreshold = 2;       # a rule excluding <= this over filter.recentDays may go
   maxChanges = 5;             # per review
   minimumConfidence = 0.7;
   maxOutputTokens = 16384;    # the reply of a review is long; reasoning counts
@@ -659,7 +666,8 @@ services.minisoc.ai.filterReview = {
 **What the model receives** (redacted like any AI request): the alerts you
 closed as FP in the look-back window, grouped by similar pattern with their
 count; the alerts you closed as TP (counter-examples); the AI rules with
-their counter since their last change and how many FP/TP closures each
+their counters (since their last change, and over the recent window) and
+how many FP/TP closures each
 matches; your rules and the system rules as read-only context. Only *your*
 closures count: AI closures are never evidence.
 
@@ -689,7 +697,8 @@ gone). The prompt is `review` (`minisoc prompts edit review`).
   so that exact rules are possible.
 - A rule changed less than `minimumRuleAge` hours ago is left alone (its
   counter needs time). A rule is deleted only when it excluded at most
-  `lowHitsThreshold` alerts since its last change, or — at once — when it
+  `lowHitsThreshold` alerts over the last `filter.recentDays` days (since
+  its last change), or — at once — when it
   would hide an alert closed as TP or breaks a guardrail added since it was
   written. This clean-up is done by the code itself at every review,
   before asking the model (and even when the model cannot be reached).
@@ -759,7 +768,7 @@ Ollama analysis in suggest mode + Home Manager widget):
         autoDiscard = true;                     # suggest mode by default
       };
       autoFilter.enable = true;                 # suggest mode by default
-      filterReview.enable = true;               # daily, suggest mode by default
+      filterReview.enable = true;               # every 6 h, suggest mode by default
     };
   };
 

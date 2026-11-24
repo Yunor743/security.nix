@@ -141,7 +141,10 @@ impl Engine {
     pub fn state(&self) -> Value {
         let r = &self.cfg.retention;
         let list = |s: &str, n: usize| self.store.list(s, n).unwrap_or_default();
-        let stats = self.store.filter_stats().unwrap_or(json!({}));
+        let stats = self
+            .store
+            .filter_stats(self.cfg.filter.recent_days)
+            .unwrap_or(json!({}));
         let rules: Vec<Value> = self
             .filters
             .ruleset
@@ -155,6 +158,8 @@ impl Engine {
                 v["since"] = s.map(|s| s["since"].clone()).unwrap_or(Value::Null);
                 v["last_hit"] = s.map(|s| s["last_hit"].clone()).unwrap_or(Value::Null);
                 v["hidden"] = s.map(|s| s["hidden"].clone()).unwrap_or(json!(0));
+                v["recent_hits"] = s.map(|s| s["recent_hits"].clone()).unwrap_or(json!(0));
+                v["recent_days"] = json!(self.cfg.filter.recent_days.max(1));
                 v["owner"] = json!(self.filters.owner(std::path::Path::new(&rule.origin)));
                 v
             })

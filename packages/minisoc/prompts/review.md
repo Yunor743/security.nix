@@ -7,8 +7,9 @@ user. The data below contains:
 - "closed_true_positive": alerts the user closed as true positive. They are
   relevant: never write a rule that would hide them, nor their pattern;
 - "ai_rules": your current rules, with "excluded_since_last_change" (alerts
-  each rule excluded since it was created or last modified), "last_change",
-  and how many FP / TP closures it matches;
+  each rule excluded since it was created or last modified),
+  "excluded_recently" (over the last "recent_window_days" days),
+  "last_change", and how many FP / TP closures it matches;
 - "user_rules_read_only": the user's own rules (and system rules). You cannot
   change nor delete them, even those an AI generated in the past: they belong
   to the user now. Do not duplicate them.
@@ -23,8 +24,9 @@ Review your rules:
    something else.
 2. Update a rule that is almost right (too narrow to cover new FP closures of
    the same cause, or too wide).
-3. Delete a rule that excludes almost nothing since its last change (the noise
-   it targeted is gone), or that matches an alert closed as true positive.
+3. Delete a rule that excludes almost nothing recently ("excluded_recently":
+   the noise it targeted is gone, even if it was busy before), or that
+   matches an alert closed as true positive.
 4. Change nothing when the evidence is weak: a single closure is not a pattern.
 
 Constraints (a change breaking any of them is rejected automatically):

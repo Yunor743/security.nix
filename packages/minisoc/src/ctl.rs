@@ -351,7 +351,9 @@ pub fn filter_list(cfg: &Config, as_json: bool) -> Res {
     let mut fm = FilterManager::from_config(cfg);
     fm.reload(true);
     let store = open_store(cfg)?;
-    let stats = store.filter_stats().map_err(|e| e.to_string())?;
+    let stats = store
+        .filter_stats(cfg.filter.recent_days)
+        .map_err(|e| e.to_string())?;
     let rules: Vec<Value> = fm
         .ruleset
         .rules
@@ -362,6 +364,7 @@ pub fn filter_list(cfg: &Config, as_json: bool) -> Res {
             v["hits"] = s.map(|s| s["hits"].clone()).unwrap_or(json!(0));
             v["since"] = s.map(|s| s["since"].clone()).unwrap_or(Value::Null);
             v["hidden"] = s.map(|s| s["hidden"].clone()).unwrap_or(json!(0));
+            v["recent_hits"] = s.map(|s| s["recent_hits"].clone()).unwrap_or(json!(0));
             v["owner"] = json!(fm.owner(std::path::Path::new(&r.origin)));
             v
         })
@@ -370,12 +373,14 @@ pub fn filter_list(cfg: &Config, as_json: bool) -> Res {
     print(&v, as_json, |v| {
         for r in v["rules"].as_array().unwrap() {
             println!(
-                "{} [{}, {}] {} filtered since {} {} — {}",
+                "{} [{}, {}] {} filtered since {}, {} in {} d {} — {}",
                 r["id"].as_str().unwrap_or(""),
                 r["owner"].as_str().unwrap_or("?"),
                 if r["enabled"] == true { "on" } else { "off" },
                 r["hits"],
                 r["since"].as_str().unwrap_or("its creation (engine not run yet)"),
+                r["recent_hits"],
+                cfg.filter.recent_days.max(1),
                 r["generated_by"]
                     .as_str()
                     .map(|g| format!("({g})"))

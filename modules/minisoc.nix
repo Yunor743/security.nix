@@ -238,6 +238,7 @@ let
       system_files = lib.optional (systemRulesFile != null) "/etc/minisoc/alert_filter.yaml";
       seed = cfg.filter.seedUserFile;
       max_backups = cfg.filter.maxBackups;
+      recent_days = cfg.filter.recentDays;
     }
     // lib.optionalAttrs (cfg.filter.aiFile != null) { ai_file = cfg.filter.aiFile; };
     retention = {
@@ -512,6 +513,16 @@ in
         default = null;
         description = "Use this file instead of `systemRules`.";
       };
+      recentDays = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 14;
+        description = ''
+          Sliding window of the per-rule "recent" counter (alerts excluded
+          over the last N days, since the rule's last change), shown next to
+          the total since that change. The AI filter review retires its rules
+          on this window.
+        '';
+      };
       aiFile = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -767,7 +778,7 @@ in
         };
         interval = lib.mkOption {
           type = lib.types.numbers.positive;
-          default = 24;
+          default = 6;
           description = "Hours between two reviews (`minisoc review` runs one now).";
         };
         lookbackDays = lib.mkOption {

@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS proposals (
 );
 CREATE TABLE IF NOT EXISTS filter_stats (rule_id TEXT PRIMARY KEY, hits INTEGER NOT NULL, last_hit TEXT);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS filter_hits_daily (
+  rule_id TEXT NOT NULL, day TEXT NOT NULL, hits INTEGER NOT NULL, PRIMARY KEY (rule_id, day)
+);
 CREATE TABLE IF NOT EXISTS offsets (path TEXT PRIMARY KEY, inode INTEGER NOT NULL, offset INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS ai_usage (day TEXT PRIMARY KEY, requests INTEGER NOT NULL, errors INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS analysis_requests (event_id TEXT PRIMARY KEY, requested_at TEXT NOT NULL);
@@ -140,6 +143,12 @@ impl Store {
                 "INSERT INTO filter_stats(rule_id, hits, last_hit) VALUES (?1, 1, ?2)
                  ON CONFLICT(rule_id) DO UPDATE SET hits = hits + 1, last_hit = ?2",
                 params![rule, now],
+            )?;
+            // Per-day buckets: hits over a sliding window.
+            self.conn.execute(
+                "INSERT INTO filter_hits_daily(rule_id, day, hits) VALUES (?1, ?2, 1)
+                 ON CONFLICT(rule_id, day) DO UPDATE SET hits = hits + 1",
+                params![rule, &now[..10]],
             )?;
         }
         let n = self.conn.execute(
@@ -378,28 +387,35 @@ impl Store {
     }
 
     /// Per rule: `hits` = alerts it excluded since the rule was last created
-    /// or modified (`since`), `last_hit`, and `hidden` = stored alerts it
-    /// currently hides.
-    pub fn filter_stats(&self) -> R<Value> {
+    /// or modified (`since`), `recent_hits` = over the last `recent_days`
+    /// days (and since that change), `last_hit`, and `hidden` = stored
+    /// alerts it currently hides.
+    pub fn filter_stats(&self, recent_days: i64) -> R<Value> {
+        let from = crate::util::format_ts(
+            chrono::Utc::now() - chrono::Duration::days(recent_days.max(1) - 1),
+        );
         let mut stmt = self.conn.prepare(
             "SELECT f.rule_id, f.hits, f.last_hit, f.since,
-               (SELECT COUNT(*) FROM events e WHERE e.filtered_by = f.rule_id AND e.pinned = 0)
+               (SELECT COUNT(*) FROM events e WHERE e.filtered_by = f.rule_id AND e.pinned = 0),
+               (SELECT COALESCE(SUM(d.hits), 0) FROM filter_hits_daily d WHERE d.rule_id = f.rule_id AND d.day >= ?1)
              FROM filter_stats f",
         )?;
         let mut m = serde_json::Map::new();
-        for row in stmt.query_map([], |r| {
+        for row in stmt.query_map([&from[..10]], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, i64>(1)?,
                 r.get::<_, Option<String>>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
             ))
         })? {
-            let (id, hits, last, since, hidden) = row?;
+            let (id, hits, last, since, hidden, recent) = row?;
             m.insert(
                 id,
-                json!({"hits": hits, "last_hit": last, "since": since, "hidden": hidden}),
+                json!({"hits": hits, "recent_hits": recent, "recent_days": recent_days.max(1),
+                       "last_hit": last, "since": since, "hidden": hidden}),
             );
         }
         Ok(Value::Object(m))
@@ -427,6 +443,7 @@ impl Store {
                      ON CONFLICT(rule_id) DO UPDATE SET hits = 0, last_hit = NULL, rule_hash = ?2, since = ?3",
                     params![r.id, hash, now],
                 )?;
+                tx.execute("DELETE FROM filter_hits_daily WHERE rule_id = ?1", [&r.id])?;
                 reset.push(r.id.clone());
             }
         }
@@ -440,7 +457,8 @@ impl Store {
             .collect();
         drop(stmt);
         for id in stale {
-            tx.execute("DELETE FROM filter_stats WHERE rule_id = ?1", [id])?;
+            tx.execute("DELETE FROM filter_stats WHERE rule_id = ?1", [&id])?;
+            tx.execute("DELETE FROM filter_hits_daily WHERE rule_id = ?1", [&id])?;
         }
         tx.commit()?;
         Ok(reset)
@@ -799,6 +817,12 @@ impl Store {
             "DELETE FROM analysis_cache WHERE created_at < ?1",
             [&cutoff],
         )?;
+        // Day buckets beyond any useful window.
+        let old_day = crate::util::format_ts(chrono::Utc::now() - chrono::Duration::days(days.max(90)));
+        self.conn.execute(
+            "DELETE FROM filter_hits_daily WHERE day < ?1",
+            [&old_day[..10]],
+        )?;
         self.conn.execute(
             "DELETE FROM proposals WHERE created_at < ?1 AND status != 'pending'",
             [&cutoff],
@@ -942,16 +966,23 @@ mod tests {
         s.upsert(&event("snort", "low", "a"), Some("r")).unwrap();
         s.upsert(&event("snort", "low", "b"), Some("r")).unwrap();
         assert!(s.sync_rule_stats(&v1).unwrap().is_empty(), "unchanged");
-        let st = s.filter_stats().unwrap();
+        let st = s.filter_stats(14).unwrap();
         assert_eq!((st["r"]["hits"].as_i64(), st["r"]["hidden"].as_i64()), (Some(2), Some(2)));
         let since = st["r"]["since"].clone();
         assert!(since.is_string());
+        assert_eq!(st["r"]["recent_hits"], 2);
+        // Hits older than the window leave the recent counter, not the total.
+        s.conn
+            .execute("UPDATE filter_hits_daily SET day = '2000-01-01'", [])
+            .unwrap();
+        let st = s.filter_stats(14).unwrap();
+        assert_eq!((st["r"]["hits"].as_i64(), st["r"]["recent_hits"].as_i64()), (Some(2), Some(0)));
         // Modified definition: the counter starts again.
         assert_eq!(s.sync_rule_stats(&rs("{source: suricata}")).unwrap(), ["r"]);
-        assert_eq!(s.filter_stats().unwrap()["r"]["hits"], 0);
+        assert_eq!(s.filter_stats(14).unwrap()["r"]["hits"], 0);
         // Removed rule: forgotten.
         s.sync_rule_stats(&RuleSet::default()).unwrap();
-        assert!(s.filter_stats().unwrap().get("r").is_none());
+        assert!(s.filter_stats(14).unwrap().get("r").is_none());
     }
 
     #[test]
