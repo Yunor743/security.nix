@@ -28,6 +28,8 @@ pkgs.testers.runNixOSTest {
       localOverrides.lsblk = ''
         audit deny @{sys}/** r,
       '';
+      # Ephemeral-root layout: /etc/toprc is a symlink into /persist.
+      persistentStoragePaths = [ "/persist" ];
     };
     environment.systemPackages = [ pkgs.procps ];
   };
@@ -64,6 +66,19 @@ pkgs.testers.runNixOSTest {
         # lsblk needs /sys, denied by the local override.
         machine.fail("lsblk 2>&1 | grep -q vda")
         machine.wait_until_succeeds("journalctl --grep 'apparmor=\"DENIED\".*profile=\"lsblk\"' >/dev/null")
+
+    with subtest("persistent storage paths are aliased (impermanence)"):
+        # top (enforced) allows /etc/toprc: through the alias it may read the
+        # file in /persist; a storage path that is not declared stays denied.
+        machine.succeed(
+            "mkdir -p /persist/etc /elsewhere/etc",
+            "touch /persist/etc/toprc /elsewhere/etc/topdefaultrc",
+            "ln -sfn /persist/etc/toprc /etc/toprc",
+            "ln -sfn /elsewhere/etc/topdefaultrc /etc/topdefaultrc",
+            "top -b -n 1 >/dev/null 2>&1 || true",
+        )
+        machine.wait_until_succeeds("journalctl --grep 'apparmor=\"DENIED\".*profile=\"top\".*name=\"/elsewhere/etc/topdefaultrc\"' >/dev/null")
+        machine.fail("journalctl --grep 'apparmor=\"DENIED\".*name=\"/persist/etc/toprc\"' >/dev/null")
 
     with subtest("reloading apparmor.service keeps apparmor.d loaded"):
         # Profiles the kernel creates at run time for complain-mode children

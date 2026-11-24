@@ -68,6 +68,16 @@ security.apparmor-d.extraTunables = ''
 '';
 ```
 
+## Ephemeral root (impermanence)
+
+With impermanence, programs reach persistent files through symlinks or bind
+mounts, and AppArmor matches the resolved path
+(`/nix/persist/etc/ssh/ssh_host_ed25519_key`), which no profile allows:
+sshd would not start once enforced. `persistentStoragePaths` (default: the
+enabled `environment.persistence` entries) adds `alias` rules so that every
+rule on `/etc/`, `/var/`, `/home/`… also applies under the storage path
+(`persistentDirectories`). Nothing to configure when impermanence is used.
+
 ## Reading denials
 
 ```sh
@@ -147,6 +157,8 @@ specialisation.no-apparmor.configuration.security.apparmor-d.enable = lib.mkForc
 | `followUpstreamComplain` | `true` | keep upstream WIP profiles in complain |
 | `localOverrides.<name>` | `{}` | rules added to a profile |
 | `extraTunables` | `""` | variable definitions |
+| `persistentStoragePaths` | from `environment.persistence` | ephemeral root storage, aliased |
+| `persistentDirectories` | `etc var home root srv opt usr` | directories aliased under it |
 | `systemdDropins` | `true` | D-Bus in its profiles |
 | `parserFlags` | `[]` | extra `apparmor_parser` arguments |
 

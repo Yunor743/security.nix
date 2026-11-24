@@ -84,7 +84,24 @@ let
         ${lib.optionalString (cfg.extraTunables != "") ''
           cp ${pkgs.writeText "apparmor-tunables" cfg.extraTunables} $out/tunables/multiarch.d/zz-nixos-local
         ''}
+        ${lib.optionalString (cfg.persistentStoragePaths != [ ]) ''
+          mkdir -p $out/tunables/alias.d
+          cp ${persistenceAliases} $out/tunables/alias.d/nixos-persistence
+        ''}
       '';
+
+  # Impermanence: files under the persistent storage are reached through
+  # symlinks or bind mounts, and AppArmor matches the path it resolves to
+  # (/nix/persist/etc/ssh/ssh_host_ed25519_key). An alias makes every rule on
+  # /etc/... also apply to /nix/persist/etc/..., in every profile.
+  persistenceAliases = pkgs.writeText "apparmor-d-persistence" (
+    lib.concatMapStrings (
+      storage:
+      lib.concatMapStrings (
+        dir: "alias /${dir}/ -> ${lib.removeSuffix "/" storage}/${dir}/,\n"
+      ) cfg.persistentDirectories
+    ) cfg.persistentStoragePaths
+  );
 
   loader = pkgs.writeShellScript "apparmor-d-load" ''
     set -u
@@ -205,6 +222,39 @@ in
         @{MOUNTDIRS}+=/data/
       '';
       description = "Variable definitions appended to apparmor.d's tunables.";
+    };
+
+    persistentStoragePaths = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = lib.mapAttrsToList (name: p: p.persistentStoragePath or name) (
+        lib.filterAttrs (_: p: p.enable or true) (config.environment.persistence or { })
+      );
+      defaultText = lib.literalExpression "the enabled entries of `environment.persistence` (impermanence)";
+      example = [ "/nix/persist" ];
+      description = ''
+        Persistent storage of an ephemeral root (impermanence). Programs reach
+        these files through symlinks or bind mounts, and AppArmor matches the
+        resolved path (`/nix/persist/etc/ssh/ssh_host_ed25519_key`), which no
+        profile allows. For each path, `alias` rules make the profiles' rules
+        on `persistentDirectories` also apply under it.
+      '';
+    };
+
+    persistentDirectories = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [
+        "etc"
+        "var"
+        "home"
+        "root"
+        "srv"
+        "opt"
+        "usr"
+      ];
+      description = ''
+        Top-level directories aliased under each of `persistentStoragePaths`
+        (`/etc/` -> `/nix/persist/etc/`).
+      '';
     };
 
     systemdDropins = lib.mkOption {
