@@ -83,6 +83,9 @@ buildGoModule (finalAttrs: {
     # NixOS (sshd-session, ...): see nix-libexec.pl.
     find apparmor.d -type f -not -path 'apparmor.d/tunables/*' -print0 \
       | xargs -0 perl ${./nix-libexec.pl}
+    # Literal FHS paths (/usr/bin/foo, /usr/share/...): see nix-fhs.pl.
+    find apparmor.d -type f -not -path 'apparmor.d/tunables/*' -print0 \
+      | xargs -0 perl ${./nix-fhs.pl}
     substituteInPlace apparmor.d/tunables/multiarch.d/system \
       --replace-fail '@{bin}=/{,usr/}bin' \
         '@{bin}=/{,usr/}bin /nix/store/*/bin /run/wrappers/wrappers.*' \
@@ -128,11 +131,9 @@ buildGoModule (finalAttrs: {
     sed -i 's|^\(\s*\)\(priority=[0-9]* \)\?/{,usr/}{,s}bin/unix_chkpwd Px,|&\n\1\2/nix/store/*/{,s}bin/unix_chkpwd Px,\n\1\2/run/wrappers/wrappers.*/unix_chkpwd Px,|' \
       $tree/abstractions/authentication
     grep -q 'run/wrappers/wrappers.\*/unix_chkpwd' $tree/abstractions/authentication
-    # Scripts executed from /usr/share (session scripts...) are in the
-    # package's share/ on NixOS.
+    # Same for the stock AppArmor abstractions (idempotent on the rest).
     find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
-      | xargs -0 perl -ni -e 'print; print "$1/nix/store/*/share/$2\n"
-          if m{^(\s*(?:priority=\S+\s+)?(?:owner\s+)?)/usr/share/(\S+\s+[a-zA-Z]*x\b.*)$}'
+      | xargs -0 perl ${./nix-fhs.pl}
     # coreutils is a multi-call binary: see nix-coreutils.pl.
     find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
       | xargs -0 perl ${./nix-coreutils.pl}

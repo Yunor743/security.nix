@@ -38,7 +38,7 @@ files do not load on NixOS. `packages/apparmor-d` builds them properly:
 | Files are read through `/etc → /etc/static → /nix/store` and `/run/current-system/sw` | Every profile may read the store and map its programs and libraries (`abstractions/base{,-strict}.d/nixos`). The store is world-readable anyway. |
 | `@{bin}/foo Px` and `@{bin}/* ix` were exact path vs glob; with the store both are globs: *"conflicting x modifiers"* | Exec rules get AppArmor 4.1 rule priorities: upstream priorities are kept in order (×10), then a rule on one program wins over a wildcard rule, profiles over abstractions (`exec-priority.pl`). |
 | Nix wrappers: `bin/foo` is a script that runs `bin/.foo-wrapped`, or a wrapper package runs the same name in another store path | `.*-wrapped*` programs and the profile's own `@{exec_path}` inherit the wrapper's profile. |
-| Layout: helpers FHS distributions put in `lib/<pkg>/` are in `libexec/` (`sshd-session`, `sshd-auth`…), session scripts in the package's `share/`, coreutils is one multi-call binary, `unix_chkpwd` is a setuid wrapper | Exec rules and attachments get the NixOS path too (`nix-libexec.pl`, `nix-coreutils.pl`, `/usr/share` → `/nix/store/*/share`); a few per-profile fixes (dockerd's `libexec/docker/dockerd`, sddm's weston greeter). |
+| Layout: helpers FHS distributions put in `lib/<pkg>/` are in `libexec/` (`sshd-session`, `sshd-auth`…), session scripts in the package's `share/`, coreutils is one multi-call binary, `unix_chkpwd` is a setuid wrapper | Exec rules and attachments get the NixOS path too (`nix-libexec.pl`, `nix-coreutils.pl`, and `nix-fhs.pl` for literal FHS paths: `/usr/bin/foo` → `/nix/store/*/{bin,sbin}/foo`, `/usr/share/…` → `/nix/store/*/share/…`, `/usr/lib…/foo` → `/nix/store/*/lib{,exec}/**/foo`); a few per-profile fixes (dockerd's `libexec/docker/dockerd`, sddm's weston greeter). |
 | A profile that does not compile would break the whole load | Every profile is compiled at build time; a failing one is set aside in `share/apparmor.d/nixos/incompatible.tsv` with the error. Currently none: all 1595 compile. |
 
 ## Modes
@@ -107,6 +107,9 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
   profile without a transition: in complain mode the activity is logged
   under `…//null-…` children. Add the store path with a local override
   (`localOverrides.<parent> = "/nix/store/*/libexec/foo Px,";`).
+- Paths left as is: reads (the whole store is readable), `/etc` scripts of
+  other distributions (cron, if-up.d, init.d, motd), programs in `/opt` and
+  in home directories (Tor Browser, VS Code extensions).
 - The first load compiles every profile (minutes on small machines); keep
   `/var/cache/apparmor-d` on persistent storage.
 
