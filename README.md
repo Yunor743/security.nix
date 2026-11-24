@@ -36,6 +36,8 @@ NixOS packages and modules for endpoint security and detection
 | `sigma-rules` | SigmaHQ detection rules (complete set) |
 | `minisoc` | MiniSOC engine + CLI (Rust): normalize, filter, triage, optional LLM analysis |
 | `minisoc-ui` | MiniSOC desktop widget (Quickshell) |
+| `apparmor-d` | apparmor.d profiles (1500+) built with their preprocessor and adapted to the Nix store |
+| `secilc`, `selinux-policy-minimal` | SELinux CIL compiler and minimal policy (from nix-selinux) |
 
 ## NixOS Modules
 
@@ -46,6 +48,8 @@ NixOS packages and modules for endpoint security and detection
 | `services.elastic-agent` | Official Elastic Agent — standalone (direct Elasticsearch) or Fleet-managed |
 | `services.jit-hater` | Behavioral memory-threat detector — dumps suspicious memory pages for offline scanning |
 | `services.minisoc` | MiniSOC: Vector collector, per-user engine, alert_filter.yaml, optional AI (SOC N1) |
+| `security.apparmor-d` | AppArmor with the apparmor.d collection: global and per-profile modes, local overrides, cached loading |
+| `security.selinux` | SELinux (reference policy, labelled store, confined services, login contexts), from nix-selinux |
 
 Home Manager: `homeManagerModules.minisoc` (`programs.minisoc`, the MiniSOC widget).
 
@@ -439,6 +443,13 @@ services.minisoc = {
 
 Full documentation: [docs/minisoc.md](docs/minisoc.md).
 
+## Mandatory access control: AppArmor and SELinux
+
+- **AppArmor + apparmor.d** (`security.apparmor-d`): the apparmor.d collection, built for NixOS (store paths in attachments and rules, Nix wrappers, rule priorities). Start in complain mode, enforce profile by profile. See [docs/apparmor.md](docs/apparmor.md).
+- **SELinux** (`security.selinux`): the reference policy with a labelled Nix store and policy as a derivation, based on [nix-selinux](https://github.com/alisonjenkins/nix-selinux). See [docs/selinux.md](docs/selinux.md).
+
+The two are mutually exclusive.
+
 ## TODO
 
 - [ ] move the fortress example in microvm.nix
@@ -452,9 +463,9 @@ Full documentation: [docs/minisoc.md](docs/minisoc.md).
 - [ ] hardened kernel
 - [ ] mineral.nix
 - [ ] lkrg / kspp
-- [ ] selinux
+- [x] selinux
 - [ ] IMA/EVM
-- [ ] apparmor
+- [x] apparmor (+ apparmor.d)
 - [ ] falco / tracee / cilium
 - [ ] auditd
 - [ ] antivirus

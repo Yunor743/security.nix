@@ -1,0 +1,40 @@
+# File contexts for the minimal policy.
+#
+# When several patterns match, the last one in this file wins, so the order
+# is general to specific. Rules that name one exact store path are generated
+# from the system configuration and appended after this file.
+
+/.*	system_u:object_r:root_t:s0
+
+/etc(/.*)?	system_u:object_r:etc_t:s0
+/var(/.*)?	system_u:object_r:var_t:s0
+/var/tmp(/.*)?	system_u:object_r:tmp_t:s0
+/tmp(/.*)?	system_u:object_r:tmp_t:s0
+/run(/.*)?	system_u:object_r:var_run_t:s0
+/home(/.*)?	system_u:object_r:user_home_t:s0
+/root(/.*)?	system_u:object_r:user_home_t:s0
+/boot(/.*)?	system_u:object_r:boot_t:s0
+/dev(/.*)?	system_u:object_r:device_t:s0
+/bin(/.*)?	system_u:object_r:bin_t:s0
+/usr/bin(/.*)?	system_u:object_r:bin_t:s0
+/run/wrappers(/.*)?	system_u:object_r:bin_t:s0
+/run/current-system	-l	system_u:object_r:var_run_t:s0
+
+/proc(/.*)?	<<none>>
+/sys(/.*)?	<<none>>
+
+/nix/var(/.*)?	system_u:object_r:nix_var_t:s0
+
+# The Nix store. These rules match on layout alone, so anyone who can build
+# a package can produce content that matches them. They therefore only hand
+# out types that carry no privilege.
+/nix/store(/.*)?	system_u:object_r:nix_store_t:s0
+/nix/store/[^/]+-unit-[^/]+(/.*)?	system_u:object_r:systemd_unit_t:s0
+/nix/store/[^/]+-(system|user)-units(/.*)?	system_u:object_r:systemd_unit_t:s0
+/nix/store/[^/]+/share(/.*)?	system_u:object_r:usr_t:s0
+/nix/store/[^/]+/etc(/.*)?	system_u:object_r:etc_t:s0
+/nix/store/[^/]+-etc(-[^/]+)?(/.*)?	system_u:object_r:etc_t:s0
+/nix/store/[^/]+/lib(32|64)?(/.*)?	system_u:object_r:lib_t:s0
+/nix/store/[^/]+/libexec(/.*)?	system_u:object_r:bin_t:s0
+/nix/store/[^/]+/s?bin(/.*)?	system_u:object_r:bin_t:s0
+/nix/store/[^/]+/(etc|lib|share|example)/systemd/(system|user|network)(/.*)?	system_u:object_r:systemd_unit_t:s0

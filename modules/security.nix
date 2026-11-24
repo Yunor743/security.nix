@@ -5,5 +5,7 @@
     ./elastic-agent.nix
     ./jit-hater.nix
     ./minisoc.nix
+    ./apparmor.nix
+    ./selinux
   ];
 }

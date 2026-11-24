@@ -40,6 +40,11 @@
           packages.jit-hater = pkgs.callPackage ./packages/jit-hater { };
           packages.yara-forge-rules = pkgs.callPackage ./packages/yara-forge-rules { };
           packages.sigma-rules = pkgs.callPackage ./packages/sigma-rules { };
+          packages.apparmor-d = pkgs.callPackage ./packages/apparmor-d { };
+          packages.secilc = pkgs.callPackage ./packages/secilc { };
+          packages.selinux-policy-minimal = pkgs.callPackage ./packages/selinux-policy-minimal {
+            secilc = pkgs.callPackage ./packages/secilc { };
+          };
           packages.minisoc = pkgs.callPackage ./packages/minisoc { };
           packages.minisoc-ui = pkgs.callPackage ./packages/minisoc-ui {
             minisoc = pkgs.callPackage ./packages/minisoc { };
@@ -56,6 +61,16 @@
               };
               minisocTests = {
                 minisoc-vector = pkgs.callPackage ./checks/minisoc-vector-test.nix { };
+                apparmor-d = pkgs.callPackage ./checks/apparmor-test.nix { inherit self; };
+                # SELinux VM tests from nix-selinux (enforcing boots, zero denials).
+                selinux-enforcing = pkgs.testers.runNixOSTest {
+                  imports = [ ./checks/selinux/enforcing.nix ];
+                  defaults.imports = [ self.nixosModules.selinux ];
+                };
+                selinux-refpolicy = pkgs.testers.runNixOSTest {
+                  imports = [ (import ./checks/selinux/refpolicy.nix { }) ];
+                  defaults.imports = [ self.nixosModules.selinux ];
+                };
                 minisoc = pkgs.callPackage ./checks/minisoc-test.nix { inherit self home-manager; };
               };
             in
@@ -75,6 +90,9 @@
         jit-hater = prev.callPackage ./packages/jit-hater { };
         yara-forge-rules = prev.callPackage ./packages/yara-forge-rules { };
         sigma-rules = prev.callPackage ./packages/sigma-rules { };
+        apparmor-d = final.callPackage ./packages/apparmor-d { };
+        secilc = final.callPackage ./packages/secilc { };
+        selinux-policy-minimal = final.callPackage ./packages/selinux-policy-minimal { };
         minisoc = final.callPackage ./packages/minisoc { };
         minisoc-ui = final.callPackage ./packages/minisoc-ui { };
       };
@@ -85,6 +103,8 @@
         elastic-agent = import ./modules/elastic-agent.nix;
         jit-hater = import ./modules/jit-hater.nix;
         minisoc = import ./modules/minisoc.nix;
+        apparmor = import ./modules/apparmor.nix;
+        selinux = import ./modules/selinux;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
       };

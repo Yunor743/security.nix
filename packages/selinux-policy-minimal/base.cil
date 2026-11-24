@@ -1,0 +1,279 @@
+; Minimal SELinux policy for NixOS.
+;
+; Purpose: prove that policy loading, labelling and domain transitions work on
+; NixOS, with a policy small enough to read in one sitting. It confines
+; nothing by itself. Every domain defined here may do anything to every type
+; defined here. Types added by other modules get no access unless those
+; modules grant it, which is what makes confinement possible on top.
+;
+; Object classes, permissions and initial SIDs come from flask.cil, which is
+; generated from the reference policy at build time.
+
+(handleunknown allow)
+(mls true)
+
+(policycap network_peer_controls)
+(policycap open_perms)
+(policycap extended_socket_class)
+(policycap cgroup_seclabel)
+; The Nix store is mounted nosuid. Without this capability the kernel
+; silently refuses every domain transition on executing a store file.
+(policycap nnp_nosuid_transition)
+
+; --- Users, roles, levels ---------------------------------------------------
+
+(user system_u)
+(role system_r)
+(role object_r)
+(userrole system_u system_r)
+(userrole system_u object_r)
+
+(sensitivity s0)
+(sensitivityorder (s0))
+(category c0)
+(categoryorder (c0))
+(sensitivitycategory s0 (c0))
+(userlevel system_u (s0))
+(userrange system_u ((s0) (s0)))
+
+; --- Attributes ---------------------------------------------------------------
+
+; Every type defined by this base policy.
+(typeattribute base_type)
+; Process types.
+(typeattribute domain)
+; File types that do not start PID 1.
+(typeattribute plain_file_type)
+
+; --- Domains ------------------------------------------------------------------
+
+(type kernel_t) ; the kernel, and everything started before systemd in the real root
+(type init_t) ; systemd as PID 1
+(type unconfined_t) ; everything systemd starts, unless a unit says otherwise
+
+(typeattributeset domain (kernel_t init_t unconfined_t))
+(roletype system_r kernel_t)
+(roletype system_r init_t)
+(roletype system_r unconfined_t)
+
+; --- File and object types ----------------------------------------------------
+
+(type unlabeled_t) ; anything without a valid label
+(type root_t) ; the root directory and anything not matched elsewhere
+(type etc_t)
+(type var_t)
+(type var_run_t)
+(type tmp_t)
+(type user_home_t)
+(type boot_t)
+(type device_t)
+(type bin_t) ; executables
+(type lib_t) ; libraries and other files under lib
+(type usr_t) ; data under share
+(type nix_store_t) ; store content not matched by a more specific rule
+(type nix_var_t) ; /nix/var
+(type systemd_unit_t) ; unit files
+(type init_exec_t) ; the systemd binary: entry point of init_t
+
+(type fs_t) ; filesystems that store labels
+(type tmpfs_t)
+(type proc_t)
+(type sysfs_t)
+(type security_t) ; selinuxfs
+(type devpts_t)
+(type cgroup_t)
+(type pseudofs_t) ; other kernel filesystems
+(type foreignfs_t) ; filesystems that cannot store labels: vfat, 9p, nfs, fuse
+(type port_t)
+(type netif_t)
+(type node_t)
+
+(typeattributeset plain_file_type
+  (unlabeled_t root_t etc_t var_t var_run_t tmp_t user_home_t boot_t
+   device_t bin_t lib_t usr_t nix_store_t nix_var_t systemd_unit_t
+   tmpfs_t foreignfs_t))
+
+(typeattributeset base_type
+  (kernel_t init_t unconfined_t
+   unlabeled_t root_t etc_t var_t var_run_t tmp_t user_home_t boot_t
+   device_t bin_t lib_t usr_t nix_store_t nix_var_t systemd_unit_t
+   init_exec_t fs_t tmpfs_t proc_t sysfs_t security_t devpts_t cgroup_t
+   pseudofs_t foreignfs_t port_t netif_t node_t))
+
+(roletype object_r base_type)
+
+; --- Access -------------------------------------------------------------------
+
+(allow domain base_type (all_classes (any)))
+
+; Any of these types may label an object on any of these filesystems.
+(allow base_type base_type (filesystem (associate)))
+
+; --- Domain transitions -------------------------------------------------------
+
+; The initrd's systemd runs as kernel_t. When it hands over to the real
+; systemd, that process becomes init_t. This only happens if the systemd
+; binary in the store carries init_exec_t, which the labelling rules grant
+; to that exact store path and nothing else.
+(typetransition kernel_t init_exec_t process init_t)
+
+; Whatever systemd executes leaves init_t.
+(typetransition init_t plain_file_type process unconfined_t)
+
+; --- Initial SIDs -------------------------------------------------------------
+
+(sidcontext kernel (system_u system_r kernel_t ((s0) (s0))))
+(sidcontext security (system_u object_r security_t ((s0) (s0))))
+(sidcontext unlabeled (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext fs (system_u object_r fs_t ((s0) (s0))))
+(sidcontext file (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext file_labels (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext init (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext any_socket (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext port (system_u object_r port_t ((s0) (s0))))
+(sidcontext netif (system_u object_r netif_t ((s0) (s0))))
+(sidcontext netmsg (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext node (system_u object_r node_t ((s0) (s0))))
+(sidcontext igmp_packet (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext icmp_socket (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext tcp_socket (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_modprobe (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_fs (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_kernel (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_net (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_net_unix (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_vm (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext sysctl_dev (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext kmod (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext policy (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext scmp_packet (system_u object_r unlabeled_t ((s0) (s0))))
+(sidcontext devnull (system_u object_r device_t ((s0) (s0))))
+
+; --- Filesystem labelling -----------------------------------------------------
+
+; Filesystems that store a label per file.
+(fsuse xattr ext2 (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr ext3 (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr ext4 (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr xfs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr btrfs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr f2fs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr bcachefs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr erofs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr squashfs (system_u object_r fs_t ((s0) (s0))))
+(fsuse xattr overlay (system_u object_r fs_t ((s0) (s0))))
+
+; In-memory filesystems: new files take the filesystem's type, and systemd
+; relabels /dev and /run from the file contexts afterwards.
+(fsuse trans tmpfs (system_u object_r tmpfs_t ((s0) (s0))))
+(fsuse trans devtmpfs (system_u object_r device_t ((s0) (s0))))
+(fsuse trans devpts (system_u object_r devpts_t ((s0) (s0))))
+(fsuse trans mqueue (system_u object_r tmpfs_t ((s0) (s0))))
+(fsuse trans hugetlbfs (system_u object_r tmpfs_t ((s0) (s0))))
+(fsuse trans shm (system_u object_r tmpfs_t ((s0) (s0))))
+
+(fsuse task pipefs (system_u object_r pseudofs_t ((s0) (s0))))
+(fsuse task sockfs (system_u object_r pseudofs_t ((s0) (s0))))
+
+; Kernel filesystems, labelled as a whole.
+(genfscon proc / (system_u object_r proc_t ((s0) (s0))))
+(genfscon sysfs / (system_u object_r sysfs_t ((s0) (s0))))
+(genfscon selinuxfs / (system_u object_r security_t ((s0) (s0))))
+(genfscon cgroup / (system_u object_r cgroup_t ((s0) (s0))))
+(genfscon cgroup2 / (system_u object_r cgroup_t ((s0) (s0))))
+(genfscon rootfs / (system_u object_r root_t ((s0) (s0))))
+(genfscon ramfs / (system_u object_r tmpfs_t ((s0) (s0))))
+(genfscon debugfs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon tracefs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon securityfs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon configfs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon pstore / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon efivarfs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon bpf / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon binfmt_misc / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon autofs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon nsfs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon fusectl / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon anon_inodefs / (system_u object_r pseudofs_t ((s0) (s0))))
+(genfscon bdev / (system_u object_r pseudofs_t ((s0) (s0))))
+
+; Filesystems that cannot store labels.
+(genfscon vfat / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon msdos / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon exfat / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon ntfs3 / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon iso9660 / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon 9p / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon virtiofs / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon fuse / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon nfs / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon nfs4 / (system_u object_r foreignfs_t ((s0) (s0))))
+(genfscon cifs / (system_u object_r foreignfs_t ((s0) (s0))))
+
+; --- Confinement ----------------------------------------------------------------
+
+; Types a confined domain may read and execute: the store and /etc.
+(typeattribute readable_type)
+(typeattributeset readable_type
+  (root_t etc_t bin_t lib_t usr_t nix_store_t systemd_unit_t init_exec_t))
+
+; Declares `t` as a confined domain: one that starts with only what almost
+; any program needs, and nothing else.
+;
+;   (type myservice_t)
+;   (call confined_domain (myservice_t))
+;
+; A service enters it with `SELinuxContext=system_u:system_r:myservice_t:s0`.
+; The module that declares the domain then adds the access the service
+; really needs. Everything not granted is denied, including reading /var,
+; /home, /root and /run, writing anywhere, and using the network.
+(macro confined_domain ((type t))
+  (roletype system_r t)
+
+  ; The unconfined domains stay unconfined with respect to it. This is what
+  ; lets systemd start, signal and stop the service.
+  (allow domain t (all_classes (any)))
+
+  ; Its own processes, descriptors, pipes and /proc/self.
+  (allow t self (process (fork sigchld sigkill sigstop signull signal getsched setsched getsession getpgid setpgid getcap getattr setrlimit)))
+  (allow t self (fd (use)))
+  (allow t self (fifo_file (ioctl read write getattr lock append open)))
+  (allow t self (file (ioctl read write getattr lock append open)))
+  (allow t self (dir (ioctl read getattr lock search open)))
+  (allow t self (lnk_file (read getattr)))
+  (allow t self (unix_stream_socket (create connect read write getattr setattr getopt setopt shutdown ioctl bind listen accept)))
+  (allow t self (unix_dgram_socket (create connect read write getattr setattr getopt setopt shutdown ioctl bind sendto)))
+
+  ; Descriptors inherited from whatever started it, and reporting back.
+  (allow t domain (fd (use)))
+  (allow t domain (process (sigchld)))
+  (allow t domain (fifo_file (ioctl read write getattr append)))
+
+  ; Standard output and error, connected to the journal by systemd.
+  (allow t domain (unix_stream_socket (ioctl read write getattr append connectto)))
+  (allow t domain (unix_dgram_socket (ioctl read write getattr sendto)))
+
+  ; Read and execute the store and /etc.
+  (allow t readable_type (dir (ioctl read getattr lock search open)))
+  (allow t readable_type (file (ioctl read getattr lock map execute execute_no_trans entrypoint open)))
+  (allow t readable_type (lnk_file (read getattr)))
+
+  ; Find its way through /run to the store, without reading /run itself.
+  (allow t var_run_t (dir (getattr search)))
+  (allow t var_run_t (lnk_file (read getattr)))
+
+  ; /dev/null, /dev/urandom and friends.
+  (allow t device_t (dir (getattr search)))
+  (allow t device_t (lnk_file (read getattr)))
+  (allow t device_t (chr_file (ioctl read write getattr append open)))
+
+  ; Kernel information.
+  (allow t proc_t (dir (ioctl read getattr lock search open)))
+  (allow t proc_t (file (ioctl read getattr open)))
+  (allow t proc_t (lnk_file (read getattr)))
+  (allow t sysfs_t (dir (ioctl read getattr lock search open)))
+  (allow t sysfs_t (file (ioctl read getattr open)))
+  (allow t sysfs_t (lnk_file (read getattr)))
+  (allow t fs_t (filesystem (getattr)))
+  (allow t tmpfs_t (filesystem (getattr))))

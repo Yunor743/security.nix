@@ -1,0 +1,28 @@
+/nix	-d	gen_context(system_u:object_r:nix_store_t,s0)
+/nix/var(/.*)?	gen_context(system_u:object_r:nix_var_t,s0)
+/nix/var/nix/builds(/.*)?	gen_context(system_u:object_r:nix_build_tmp_t,s0)
+/nix/store(/.*)?	gen_context(system_u:object_r:nix_store_t,s0)
+
+# Store paths are laid out like /usr. These rules match on patterns any
+# local user can imitate, so they hand out only generic types.
+/nix/store/[^/]+/s?bin(/.*)?	gen_context(system_u:object_r:bin_t,s0)
+/nix/store/[^/]+/libexec(/.*)?	gen_context(system_u:object_r:bin_t,s0)
+/nix/store/[^/]+/bin/(ba|da|z)?sh	--	gen_context(system_u:object_r:shell_exec_t,s0)
+/nix/store/[^/]+/lib(32|64)?(/.*)?	gen_context(system_u:object_r:lib_t,s0)
+/nix/store/[^/]+/lib(32|64)?/ld-[^/]*\.so(\.[^/]*)*	--	gen_context(system_u:object_r:ld_so_t,s0)
+/nix/store/[^/]+/lib/modules(/.*)?	gen_context(system_u:object_r:modules_object_t,s0)
+/nix/store/[^/]+/share(/.*)?	gen_context(system_u:object_r:usr_t,s0)
+/nix/store/[^/]+/etc(/.*)?	gen_context(system_u:object_r:etc_t,s0)
+/nix/store/[^/]+-etc(-[^/]+)?(/.*)?	gen_context(system_u:object_r:etc_t,s0)
+/nix/store/[^/]+-unit-[^/]+(/.*)?	gen_context(system_u:object_r:systemd_unit_t,s0)
+/nix/store/[^/]+-(system|user)-units(/.*)?	gen_context(system_u:object_r:systemd_unit_t,s0)
+/nix/store/[^/]+/(etc|lib|share|example)/systemd/(system|user)(/.*)?	gen_context(system_u:object_r:systemd_unit_t,s0)
+/nix/store/[^/]+/(etc|lib)/systemd/network(/.*)?	gen_context(system_u:object_r:net_conf_t,s0)
+/nix/store/[^/]+-unit-[^/]+\.(link|network|netdev)(/.*)?	gen_context(system_u:object_r:net_conf_t,s0)
+
+/run/wrappers(/.*)?	gen_context(system_u:object_r:bin_t,s0)
+/run/current-system	-l	gen_context(system_u:object_r:nix_store_t,s0)
+/run/booted-system	-l	gen_context(system_u:object_r:nix_store_t,s0)
+
+# The login record database of pam_lastlog2.
+/var/lib/lastlog(/.*)?	gen_context(system_u:object_r:lastlog_t,s0)

@@ -1,0 +1,457 @@
+policy_module(nixos)
+
+gen_require(`
+	attribute domain;
+	attribute non_security_file_type;
+	type initrc_t;
+	type init_t;
+	type var_run_t;
+	type selinux_config_t;
+')
+
+########################################
+# Declarations
+#
+
+# Content of the Nix store that no more specific rule matches.
+type nix_store_t;
+files_type(nix_store_t)
+files_mountpoint(nix_store_t)
+
+# Nix state outside the store: database, profiles, garbage collector roots.
+type nix_var_t;
+files_type(nix_var_t)
+
+########################################
+# Policy
+#
+
+# The store is world-readable by design and every program lives in it,
+# so every domain may read it. Executing needs a more specific type.
+allow domain nix_store_t:dir list_dir_perms;
+allow domain nix_store_t:file { read_file_perms map };
+allow domain nix_store_t:lnk_file read_lnk_file_perms;
+
+# NixOS mounts the store nosuid, and every executable lives there. The
+# kernel then refuses a domain transition unless this is allowed; the
+# transition itself still needs its own rule.
+allow domain domain:process2 nosuid_transition;
+
+# /run/current-system and /run/booted-system point into the store and
+# are followed by every program that looks for a tool or a setting. They
+# are replaced on every switch, and a fresh one carries the generic
+# runtime type until the next boot labels it.
+allow domain var_run_t:lnk_file read_lnk_file_perms;
+
+# Files under /etc are symbolic links into the store. The link at
+# /etc/selinux/config has the type of the file it stands for, and every
+# program that asks whether SELinux is enabled follows it.
+allow domain selinux_config_t:lnk_file read_lnk_file_perms;
+
+# Nix profiles and garbage collector roots under /nix/var are symlinks
+# into the store that programs follow to find their files.
+allow domain nix_var_t:dir list_dir_perms;
+allow domain nix_var_t:lnk_file read_lnk_file_perms;
+
+# /etc on NixOS is a farm of symlinks into the store, including files
+# that have their own types elsewhere, such as the SELinux configuration
+# that every program linked against libselinux reads.
+files_read_etc_files(domain)
+# Data files of packages (share/) are store content like any other.
+files_read_usr_files(domain)
+
+# Programs carry generic types unless the system configuration names
+# them by exact store path, so services start in the generic service
+# domain. Leave that domain unconfined: confinement is opt-in.
+optional_policy(`
+	unconfined_domain(initrc_t)
+')
+
+# Login programs (login, sshd) carry generic types too and run in the
+# generic service domain, so that domain starts user sessions and must
+# be able to change the SELinux user and role when it does.
+domain_subj_id_change_exemption(initrc_t)
+domain_role_change_exemption(initrc_t)
+
+# Seen at boot: PCRE just-in-time compilation in grep, and agetty.
+allow initrc_t self:process execmem;
+allow initrc_t self:capability2 checkpoint_restore;
+
+# The reference policy lets sshd start sessions only in its own user
+# domains. Logins here are mapped to the unconfined user.
+optional_policy(`
+	gen_require(`
+		type sshd_t;
+		type unconfined_t;
+	')
+
+	unconfined_shell_domtrans(sshd_t)
+	allow sshd_t unconfined_t:process { noatsecure rlimitinh siginh };
+')
+
+# NixOS runs nsncd in place of nscd. It is a threaded Rust program and
+# asks for its scheduling policy at start.
+optional_policy(`
+	gen_require(`
+		type nscd_t;
+	')
+
+	allow nscd_t self:process getsched;
+')
+
+########################################
+# systemd helper daemons
+#
+# With their programs named by exact store path, systemd's helpers run
+# in the domains the reference policy has for them. The rules below
+# cover what the policy does not yet allow them: some are NixOS
+# specifics, most are behaviour of systemd releases newer than the
+# policy.
+
+gen_require(`
+	type cgroup_t;
+	type etc_runtime_t;
+	type fs_t;
+	type init_runtime_t;
+	type kernel_t;
+	type lib_t;
+	type nsfs_t;
+	type ramfs_t;
+	type syslogd_t;
+	type systemd_generator_t;
+	type systemd_journal_init_t;
+	type systemd_journal_t;
+	type systemd_logind_t;
+	type systemd_machine_id_setup_t;
+	type systemd_modules_load_t;
+	type systemd_tmpfiles_t;
+	type systemd_user_runtime_dir_t;
+	type systemd_userdbd_runtime_t;
+	type tmpfs_t;
+	type tty_device_t;
+	type udev_t;
+	type user_runtime_t;
+	type var_log_t;
+')
+
+# Memory pressure notifications, which every long-running systemd
+# daemon subscribes to in its own control group.
+allow { syslogd_t systemd_logind_t udev_t } cgroup_t:file rw_file_perms;
+allow systemd_modules_load_t cgroup_t:file read_file_perms;
+
+# Service credentials are passed on a small tmpfs under /run/credentials.
+allow syslogd_t tmpfs_t:dir search_dir_perms;
+
+# udev keeps state in a sealed memory file across re-execution, and
+# takes over the kernel event socket opened before the policy was
+# loaded in the initrd.
+allow udev_t tmpfs_t:file rw_file_perms;
+allow udev_t kernel_t:netlink_kobject_uevent_socket { getattr read write };
+
+# logind serves its varlink interface next to the D-Bus one.
+allow systemd_logind_t init_runtime_t:sock_file manage_sock_file_perms;
+optional_policy(`
+	gen_require(`
+		type sshd_t;
+	')
+
+	allow sshd_t systemd_logind_t:unix_stream_socket connectto;
+# pam_systemd registers the session with logind and passes a pidfd. To
+# use one, systemd first asks what filesystem it is on; pidfs has no type
+# of its own in the policy. Without this the session is not registered,
+# and the denial is not logged.
+fs_getattr_xattr_fs(sshd_t)
+kernel_getattr_proc(sshd_t)
+')
+
+# login and agetty carry generic types and run in the generic service
+# domain; logind inspects the process behind each session.
+allow systemd_logind_t initrc_t:dir list_dir_perms;
+allow systemd_logind_t initrc_t:file read_file_perms;
+allow systemd_logind_t initrc_t:lnk_file read_lnk_file_perms;
+
+# The helper that creates /run/user/<uid> looks the user up.
+allow systemd_user_runtime_dir_t systemd_userdbd_runtime_t:sock_file write_sock_file_perms;
+allow systemd_user_runtime_dir_t init_t:unix_stream_socket connectto;
+files_list_tmp(systemd_user_runtime_dir_t)
+optional_policy(`
+	nscd_use(systemd_user_runtime_dir_t)
+')
+optional_policy(`
+	dbus_system_bus_client(systemd_user_runtime_dir_t)
+')
+
+allow systemd_tmpfiles_t user_runtime_t:dir search_dir_perms;
+
+# NixOS declares the layout of /nix/var, root's channel list and the
+# /run/keys ramfs as tmpfiles rules.
+allow systemd_tmpfiles_t nix_var_t:dir manage_dir_perms;
+allow systemd_tmpfiles_t nix_var_t:file manage_file_perms;
+allow systemd_tmpfiles_t nix_var_t:lnk_file manage_lnk_file_perms;
+allow systemd_tmpfiles_t ramfs_t:dir { getattr search setattr };
+# NixOS marks /var/empty immutable.
+allow systemd_tmpfiles_t self:capability linux_immutable;
+
+# NixOS modules use tmpfiles rules to place symbolic links wherever a
+# service wants them: the loader stub in /lib64, k3s's image directory
+# under /var/lib. The policy's switch for this covers files and
+# directories but not links.
+allow systemd_tmpfiles_t non_security_file_type:lnk_file manage_lnk_file_perms;
+# Recent systemd (nixpkgs unstable, late 2026) also restores the label of
+# the links it manages (/run/current-system, /run/booted-system, the loader
+# stub) to their file context. [security.nix]
+allow systemd_tmpfiles_t non_security_file_type:lnk_file relabel_lnk_file_perms;
+
+allow systemd_machine_id_setup_t self:process getcap;
+allow systemd_machine_id_setup_t { fs_t nsfs_t }:filesystem getattr;
+
+# With persistent storage journald creates /var/log/journal itself. Give
+# the directory the journal type from the start; left with the type of
+# /var/log, the flush at the next boot cannot read the files in it.
+gen_require(`
+	type systemd_journal_t;
+')
+filetrans_pattern(syslogd_t, var_log_t, systemd_journal_t, dir, "journal")
+
+# journalctl run as a system service, for example to rebuild the
+# catalog or to flush the journal.
+allow systemd_journal_init_t var_log_t:dir search_dir_perms;
+allow systemd_journal_init_t systemd_journal_t:file map;
+allow systemd_journal_init_t etc_runtime_t:file read_file_perms;
+allow systemd_journal_init_t tty_device_t:chr_file rw_chr_file_perms;
+# Looking up a user or group goes through nscd on NixOS.
+nscd_use(systemd_journal_init_t)
+
+# dbus-broker subscribes to systemd's unit state to activate services.
+optional_policy(`
+	gen_require(`
+		type system_dbusd_t;
+	')
+
+	allow system_dbusd_t init_t:system status;
+')
+
+########################################
+# The Nix daemon and builds
+#
+
+## <desc>
+## <p>
+## Run the programs the Nix daemon starts, which are the builders of
+## derivations, in the confined domain nix_build_t.
+## </p>
+## </desc>
+gen_tunable(nix_confine_builds, false)
+
+# The daemon manages the store and its database as root on behalf of
+# every user, so its own domain is not restricted. It exists so that what
+# the daemon starts can be told apart from what a user starts.
+type nix_daemon_t;
+type nix_exec_t;
+init_daemon_domain(nix_daemon_t, nix_exec_t)
+unconfined_domain(nix_daemon_t)
+
+# A build: the builder of a derivation and everything it runs. Nix
+# already isolates builds with namespaces and separate users; this domain
+# limits what a build that breaks out of that isolation can reach.
+type nix_build_t;
+domain_type(nix_build_t)
+role system_r types nix_build_t;
+
+# Working directories of builds.
+type nix_build_tmp_t;
+files_type(nix_build_tmp_t)
+
+filetrans_pattern(nix_daemon_t, nix_var_t, nix_build_tmp_t, dir, "builds")
+
+gen_require(`
+	type bin_t;
+	type shell_exec_t;
+')
+
+# A builder is an ordinary program: a shell, or a freshly built file that
+# has no specific label yet. Any program the daemon runs enters the build
+# domain. Nix starts builders with no_new_privs set.
+allow nix_daemon_t nix_build_t:process { transition sigchld sigkill sigstop signull signal };
+allow nix_daemon_t nix_build_t:process2 { nnp_transition nosuid_transition };
+allow nix_build_t { bin_t shell_exec_t nix_store_t }:file entrypoint;
+tunable_policy(`nix_confine_builds',`
+	type_transition nix_daemon_t { bin_t shell_exec_t nix_store_t }:process nix_build_t;
+')
+
+# The daemon hands the build its log pipe and waits for it.
+allow nix_build_t nix_daemon_t:fd use;
+allow nix_build_t nix_daemon_t:fifo_file rw_fifo_file_perms;
+allow nix_build_t nix_daemon_t:process sigchld;
+
+allow nix_build_t self:process { fork sigchld sigkill sigstop signull signal getsched setsched getsession getpgid setpgid getcap getattr setrlimit setfscreate ptrace execmem execstack };
+allow nix_build_t self:fifo_file manage_fifo_file_perms;
+allow nix_build_t self:unix_stream_socket { create_stream_socket_perms connectto };
+allow nix_build_t self:unix_dgram_socket { create_socket_perms sendto };
+allow nix_build_t self:tcp_socket create_stream_socket_perms;
+allow nix_build_t self:udp_socket create_socket_perms;
+allow nix_build_t self:netlink_route_socket r_netlink_socket_perms;
+allow nix_build_t self:sem create_sem_perms;
+allow nix_build_t self:shm create_shm_perms;
+allow nix_build_t self:msgq create_msgq_perms;
+allow nix_build_t self:user_namespace create;
+allow nix_build_t self:cap_userns { chown dac_override dac_read_search fowner fsetid kill setgid setuid setpcap sys_chroot sys_admin sys_ptrace mknod net_admin net_bind_service net_raw };
+
+# Outputs are written in the store, where a new file has the generic
+# store type, and scratch files in the build directory. Both hold
+# programs that the build runs.
+manage_dirs_pattern(nix_build_t, { nix_store_t nix_build_tmp_t }, { nix_store_t nix_build_tmp_t })
+manage_files_pattern(nix_build_t, { nix_store_t nix_build_tmp_t }, { nix_store_t nix_build_tmp_t })
+manage_lnk_files_pattern(nix_build_t, { nix_store_t nix_build_tmp_t }, { nix_store_t nix_build_tmp_t })
+manage_fifo_files_pattern(nix_build_t, { nix_store_t nix_build_tmp_t }, { nix_store_t nix_build_tmp_t })
+manage_sock_files_pattern(nix_build_t, { nix_store_t nix_build_tmp_t }, { nix_store_t nix_build_tmp_t })
+allow nix_build_t { nix_store_t nix_build_tmp_t }:file { execute execute_no_trans map execmod };
+
+# Inputs are other store paths, whose files carry whatever type the
+# labelling rules give them. A build reads and runs all of them. It never
+# needs the password database.
+files_list_non_auth_dirs(nix_build_t)
+files_read_non_auth_files(nix_build_t)
+files_read_all_symlinks(nix_build_t)
+corecmd_exec_all_executables(nix_build_t)
+libs_exec_lib_files(nix_build_t)
+libs_exec_ld_so(nix_build_t)
+files_exec_usr_files(nix_build_t)
+files_exec_etc_files(nix_build_t)
+
+# The sandbox: its own /dev on a tmpfs with a few device nodes, a private
+# /dev/shm and pseudo-terminals, /proc.
+fs_getattr_all_fs(nix_build_t)
+fs_manage_tmpfs_dirs(nix_build_t)
+fs_manage_tmpfs_files(nix_build_t)
+fs_manage_tmpfs_symlinks(nix_build_t)
+fs_manage_tmpfs_sockets(nix_build_t)
+dev_getattr_all_chr_files(nix_build_t)
+dev_rw_null(nix_build_t)
+dev_rw_zero(nix_build_t)
+dev_read_rand(nix_build_t)
+dev_read_urand(nix_build_t)
+dev_rw_kvm(nix_build_t)
+term_list_ptys(nix_build_t)
+term_use_ptmx(nix_build_t)
+term_use_generic_ptys(nix_build_t)
+term_use_controlling_term(nix_build_t)
+kernel_read_system_state(nix_build_t)
+kernel_read_network_state(nix_build_t)
+kernel_read_all_sysctls(nix_build_t)
+
+# Fixed-output derivations download their sources.
+corenet_all_recvfrom_unlabeled(nix_build_t)
+corenet_tcp_bind_generic_node(nix_build_t)
+corenet_udp_bind_generic_node(nix_build_t)
+corenet_tcp_bind_all_ports(nix_build_t)
+corenet_udp_bind_all_ports(nix_build_t)
+corenet_tcp_connect_all_ports(nix_build_t)
+sysnet_read_config(nix_build_t)
+miscfiles_read_generic_certs(nix_build_t)
+miscfiles_read_localization(nix_build_t)
+
+########################################
+# Network setup and console login
+#
+
+gen_require(`
+	type dhcpc_t;
+	type getty_t;
+	type net_conf_t;
+')
+
+# NixOS manages /etc/resolv.conf with resolvconf, whose state is under
+# /run/resolvconf. Its service creates both, and the DHCP client's hook
+# updates them and restarts the name service cache.
+sysnet_runtime_filetrans_config(initrc_t, dir, "resolvconf")
+sysnet_etc_filetrans_config(initrc_t, "resolv.conf")
+manage_dirs_pattern(dhcpc_t, net_conf_t, net_conf_t)
+manage_files_pattern(dhcpc_t, net_conf_t, net_conf_t)
+init_start_generic_units(dhcpc_t)
+init_get_generic_units_status(dhcpc_t)
+init_dbus_chat(dhcpc_t)
+
+# systemd passes credentials to the login prompt in a directory on a
+# tmpfs under /run/credentials.
+fs_list_tmpfs(getty_t)
+
+# PAM runs its password helper through the setuid wrapper in
+# /run/wrappers, which has the generic program type. The helper itself
+# has its own type and domain.
+gen_require(`
+	type local_login_t;
+')
+corecmd_exec_bin(local_login_t)
+
+# pam_lastlog2 keeps login records in an SQLite database under
+# /var/lib/lastlog, which creates and removes journal files next to it.
+gen_require(`
+	type lastlog_t;
+	type systemd_logind_t;
+')
+files_search_var_lib({ local_login_t sshd_t })
+manage_dirs_pattern({ local_login_t sshd_t }, lastlog_t, lastlog_t)
+manage_files_pattern({ local_login_t sshd_t }, lastlog_t, lastlog_t)
+
+# pam_systemd registers the session with logind over its varlink socket.
+allow local_login_t init_runtime_t:sock_file write_sock_file_perms;
+allow local_login_t systemd_logind_t:unix_stream_socket connectto;
+fs_getattr_xattr_fs(local_login_t)
+
+########################################
+# Additions from security.nix, found on a desktop with Home Manager and an
+# ephemeral root (the owned VM).
+#
+
+gen_require(`
+	type xdg_data_t;
+	type xdg_config_t;
+	type system_dbusd_t;
+	type systemd_generator_t;
+	type ntpd_t;
+	type nscd_t;
+	type systemd_hostnamed_t;
+	type systemd_tmpfiles_t;
+	type systemd_user_runtime_t;
+	type user_home_t;
+	type cgroup_t;
+	type etc_t;
+	type lib_t;
+	type udev_t;
+	type unlabeled_t;
+')
+
+# XDG_DATA_DIRS and the systemd user environment point into users' Nix
+# profiles (~/.local/state/nix/profiles, labelled xdg_data_t): the system
+# bus and the xdg-autostart / environment.d generators walk them to reach
+# the store.
+allow { system_dbusd_t systemd_generator_t } xdg_data_t:dir search_dir_perms;
+allow { system_dbusd_t systemd_generator_t } xdg_data_t:lnk_file read_lnk_file_perms;
+allow systemd_generator_t xdg_config_t:dir list_dir_perms;
+allow systemd_generator_t xdg_config_t:lnk_file read_lnk_file_perms;
+allow systemd_generator_t user_home_t:lnk_file read_lnk_file_perms;
+allow systemd_generator_t systemd_user_runtime_t:dir search_dir_perms;
+
+# systemd-timesyncd checks /proc/sys/net/ipv6/conf/all/disable_ipv6.
+kernel_read_net_sysctls(ntpd_t)
+kernel_read_net_sysctls(nscd_t)
+
+# Memory pressure files, as for the other systemd helpers in this module.
+allow { ntpd_t systemd_hostnamed_t } cgroup_t:file rw_file_perms;
+
+# Ephemeral root (impermanence on a fresh btrfs subvolume): directories
+# created before the policy is loaded are unlabelled, and tmpfiles restores
+# their labels at every boot.
+allow systemd_tmpfiles_t unlabeled_t:dir { list_dir_perms setattr relabelfrom };
+
+# Unconfined services keep eBPF / perf access (security tools such as
+# rustinel attach tracepoints): the perf_event class is newer than
+# unconfined_domain() in this reference policy.
+allow initrc_t self:perf_event { open cpu kernel tracepoint read write };
+
+# udev runs helpers shipped under the store's lib directories.
+can_exec(udev_t, lib_t)
+
+# dbus-broker-launch watches its configuration directories for changes.
+allow system_dbusd_t etc_t:dir watch;
