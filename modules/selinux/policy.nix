@@ -332,7 +332,10 @@ in
         )
       );
       mutableLabelRevision = builtins.substring 0 32 (
-        builtins.hashString "sha256" (genericFileContexts + substitutionsText)
+        # The list of paths too: adding one must trigger a pass. [security.nix]
+        builtins.hashString "sha256" (
+          genericFileContexts + substitutionsText + lib.concatStringsSep "\n" cfg.relabelPaths
+        )
       );
 
       # PID 1 enters its domain only if the systemd binary carries this type.

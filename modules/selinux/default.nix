@@ -94,13 +94,29 @@ in
       '';
     };
 
+    userContextServices = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = map (user: "home-manager-${user}") (lib.attrNames (config.home-manager.users or { }));
+      defaultText = lib.literalExpression ''map (u: "home-manager-''${u}") (attrNames config.home-manager.users)'';
+      description = ''
+        System services that act for a user and run in the user context
+        (`unconfined_u:unconfined_r:unconfined_t`) instead of the
+        unconfined service domain: Home Manager activation starts a session
+        bus (`dbus-run-session`) and writes the user's files, which the
+        system bus domain must not do. [security.nix]
+      '';
+    };
+
     pamServices = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [
         "login"
         "systemd-user"
       ]
-      ++ lib.optional config.services.displayManager.sddm.enable "sddm"
+      ++ lib.optionals config.services.displayManager.sddm.enable [
+        "sddm"
+        "sddm-greeter"
+      ]
       ++ lib.optional config.services.displayManager.gdm.enable "gdm-password"
       ++ lib.optional config.services.xserver.displayManager.lightdm.enable "lightdm"
       ++ lib.optional config.services.greetd.enable "greetd";

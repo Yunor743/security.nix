@@ -79,8 +79,12 @@ On top of nix-selinux (all marked `[security.nix]` in the sources):
   };
   ```
 
+- `userContextServices`: systemd services run in the user context
+  (default: Home Manager activations), whose D-Bus sessions must not run in
+  the system bus domain.
 - `pamServices`: PAM services that open sessions with `pam_selinux`
-  (default: `login`, `systemd-user` and the enabled display manager), so a
+  (default: `login`, `systemd-user` and the enabled display manager with its
+  greeter), so a
   graphical session and the user's systemd manager start in the user's
   mapped context, not in the context of the program that opened them.
 - Policy rules found on a real desktop (the `owned` host: Hyprland, SDDM,
@@ -95,13 +99,17 @@ On top of nix-selinux (all marked `[security.nix]` in the sources):
 - VM test `selinux-refpolicy` (enforcing): boot, SSH (key and password),
   console login in the mapped context, sudo/su, confined services, Nix
   daemon and confined builds, reboot, zero denials.
-- `owned` (desktop, permissive): boots, store labelled, system services in
-  their domains, would-be denials down from 276 to 33.
+- `owned` (Hyprland desktop, SDDM, Home Manager, impermanence on btrfs,
+  rustinel, Docker): boots **enforcing**, no failed unit, graphical login
+  to Hyprland with the shell and widgets, Home Manager activation, a handful
+  of harmless denials (capability `net_admin` probes, `unix_chkpwd`
+  inheritance flags). In permissive the would-be denials went from 276 to
+  that.
 
-Remaining before enforcing on a graphical desktop: the same `dbus-daemon`
-program serves the system bus and the session buses, and its exact label
-makes session buses enter `system_dbusd_t`; a session-bus mapping is still
-to be written. Servers and consoles are not affected.
+Session buses: the greeter and user sessions open through `pam_selinux`
+(`pamServices`) and services started outside a login (`userContextServices`)
+get the user context, so `dbus-daemon` session buses no longer run in
+`system_dbusd_t`.
 
 ## Recovery
 

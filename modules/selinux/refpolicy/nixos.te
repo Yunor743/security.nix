@@ -455,3 +455,58 @@ can_exec(udev_t, lib_t)
 
 # dbus-broker-launch watches its configuration directories for changes.
 allow system_dbusd_t etc_t:dir watch;
+
+gen_require(`
+	type unconfined_t;
+	type usr_t;
+	type user_tmpfs_t;
+	type bin_t;
+	type user_home_t;
+	type systemd_logind_t;
+	type dosfs_t;
+	type fixed_disk_device_t;
+	type xdg_config_t;
+	type system_dbusd_tmp_t;
+')
+
+# Graphical sessions (SDDM, Qt/QML, browsers, JS engines) generate code at
+# run time. Unconfined users are unconfined: let them.
+allow unconfined_t self:process { execmem execstack };
+allow unconfined_t user_tmpfs_t:file execmod;
+
+# A display manager enters the user's session (pam_selinux) by running a
+# session script; in the store those can carry the generic usr_t/lib_t
+# types rather than bin_t.
+allow unconfined_t { usr_t lib_t nix_store_t }:file entrypoint;
+
+# dbus-run-session (Home Manager activation, scripts) starts a dbus-daemon
+# that lands in system_dbusd_t and puts its socket in /tmp.
+allow system_dbusd_t system_dbusd_tmp_t:sock_file manage_sock_file_perms;
+can_exec(system_dbusd_t, bin_t)
+allow system_dbusd_t user_home_t:lnk_file read_lnk_file_perms;
+
+# Unconfined services (initrc_t, e.g. the display manager) and unconfined
+# users talk over the mediated bus: the display manager hands the session
+# over this way.
+allow initrc_t unconfined_t:dbus send_msg;
+allow unconfined_t initrc_t:dbus send_msg;
+
+# logind checks the hibernation target: the ESP, and a btrfs swapfile, which
+# cannot be relabelled while it is in use.
+allow systemd_logind_t dosfs_t:dir getattr;
+allow systemd_logind_t unlabeled_t:dir search_dir_perms;
+allow systemd_logind_t unlabeled_t:file { getattr open read ioctl };
+allow systemd_logind_t fixed_disk_device_t:blk_file getattr;
+# Reading the raw disk stays denied, without filling the log.
+dontaudit systemd_logind_t fixed_disk_device_t:blk_file read;
+allow system_dbusd_t xdg_config_t:dir search_dir_perms;
+
+gen_require(`
+	role system_r;
+	role unconfined_r;
+')
+
+# Services that act for a user (security.selinux.userContextServices, e.g.
+# Home Manager activation) are started by systemd in the user context.
+allow system_r unconfined_r;
+allow init_t unconfined_t:process { transition siginh rlimitinh noatsecure };

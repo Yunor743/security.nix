@@ -4,16 +4,22 @@
 # once @{bin} also covers /nix/store/*/bin both are globs, which the parser
 # rejects as "conflicting x modifiers". AppArmor >= 4.1 rule priority restores
 # the intended precedence.
+#
+# Upstream's own priorities are kept in order (scaled by 10) and ties are
+# broken by specificity: + AA_PRIORITY (3 in profiles, 2 in abstractions) for
+# a rule whose last path component has no wildcard.
 use strict; use warnings;
-my $prio = $ENV{AA_PRIORITY} // 1;
+my $bonus = $ENV{AA_PRIORITY} // 1;
 while (my $line = <>) {
-  if ($line =~ /^(\s*)((?:audit\s+)?(?:owner\s+)?)([@\/]\S+)(\s+)([a-zA-Z]*x)(\b.*)$/s
-      && $line !~ /^\s*(?:deny|priority=)/) {
-    my ($ind, $q, $path, $sp, $mode, $rest) = ($1, $2, $3, $4, $5, $6);
+  if ($line =~ /^(\s*)(?:priority=(-?\d+)\s+)?((?:audit\s+)?(?:owner\s+)?)([@\/]\S+)(\s+)([a-zA-Z]*x)(\b.*)$/s
+      && $line !~ /^\s*(?:priority=\S+\s+)?deny\b/) {
+    my ($ind, $up, $q, $path, $sp, $mode, $rest) = ($1, $2 // 0, $3, $4, $5, $6, $7);
     my $last = $path; $last =~ s{.*/}{};
-    if ($path !~ /\*\*/ && $last !~ /\*/ && $last ne '') {
-      $line = "${ind}priority=$prio ${q}${path}${sp}${mode}${rest}";
-    }
+    my $specific = $path !~ /\*\*/ && $last !~ /\*/ && $last ne '';
+    my $prio = $up * 10 + ($specific ? $bonus : 0);
+    $line = $prio == 0
+      ? "${ind}${q}${path}${sp}${mode}${rest}"
+      : "${ind}priority=$prio ${q}${path}${sp}${mode}${rest}";
   }
   print $line;
 }

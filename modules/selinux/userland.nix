@@ -61,6 +61,10 @@ let
 in
 {
   config = lib.mkIf cfg.enable {
+    systemd.services = lib.genAttrs cfg.userContextServices (_: {
+      serviceConfig.SELinuxContext = "unconfined_u:unconfined_r:unconfined_t:s0";
+    });
+
     # PID 1 loads the policy, labels /dev and /run, and applies
     # SELinuxContext= only when systemd is built with SELinux support.
     systemd.package = pkgs.systemd.override { withSelinux = true; };

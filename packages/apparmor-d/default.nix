@@ -79,6 +79,10 @@ buildGoModule (finalAttrs: {
         'tasks.Distribution == "arch" || tasks.Distribution == "fedora" || tasks.Distribution == "nixos"' \
       --replace-fail 'Values: []string{"/{,usr/}{,s}bin"}' \
         'Values: []string{"/{,usr/}{,s}bin", "/nix/store/*/{,s}bin", "/run/wrappers/wrappers.*"}'
+    # Helpers FHS distributions put in lib/<package>/ are in libexec/ on
+    # NixOS (sshd-session, ...): see nix-libexec.pl.
+    find apparmor.d -type f -not -path 'apparmor.d/tunables/*' -print0 \
+      | xargs -0 perl ${./nix-libexec.pl}
     substituteInPlace apparmor.d/tunables/multiarch.d/system \
       --replace-fail '@{bin}=/{,usr/}bin' \
         '@{bin}=/{,usr/}bin /nix/store/*/bin /run/wrappers/wrappers.*' \
@@ -98,6 +102,43 @@ buildGoModule (finalAttrs: {
     chmod -R u+w $tree
     cp -r .build/apparmor.d/. $tree/
 
+    find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" \
+      | while read -r f; do
+          case "$f" in
+            "$tree"/abstractions/*) p=2 ;;
+            *) p=3 ;;
+          esac
+          AA_PRIORITY=$p perl ${./exec-priority.pl} "$f" > "$f.tmp"
+          mv "$f.tmp" "$f"
+        done
+
+    # NixOS packaging specifics, inserted before each profile's local hook
+    # (users keep local/<profile> for themselves).
+    fix() {
+      f=$(grep -rl "^  include if exists <local/$1>" $tree --include='*' | head -1)
+      [ -n "$f" ] || { echo "nixos fix: no profile $1" >&2; exit 1; }
+      R="$2" perl -0pi -e "s|(  include if exists <local/$1>)|  # NixOS\n\$ENV{R}\n\$1|" "$f"
+    }
+    # bin/dockerd is a wrapper running libexec/docker/dockerd.
+    fix dockerd '  priority=3 /nix/store/*/libexec/docker/dockerd rix,'
+    # The Wayland greeter of sddm runs on weston.
+    fix sddm '  priority=3 @{bin}/weston rix,'
+    # The stock authentication abstraction names unix_chkpwd by FHS path:
+    # add the store and the setuid wrapper.
+    sed -i 's|^\(\s*\)\(priority=[0-9]* \)\?/{,usr/}{,s}bin/unix_chkpwd Px,|&\n\1\2/nix/store/*/{,s}bin/unix_chkpwd Px,\n\1\2/run/wrappers/wrappers.*/unix_chkpwd Px,|' \
+      $tree/abstractions/authentication
+    grep -q 'run/wrappers/wrappers.\*/unix_chkpwd' $tree/abstractions/authentication
+    # Scripts executed from /usr/share (session scripts...) are in the
+    # package's share/ on NixOS.
+    find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
+      | xargs -0 perl -ni -e 'print; print "$1/nix/store/*/share/$2\n"
+          if m{^(\s*(?:priority=\S+\s+)?(?:owner\s+)?)/usr/share/(\S+\s+[a-zA-Z]*x\b.*)$}'
+    # coreutils is a multi-call binary: see nix-coreutils.pl.
+    find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" -print0 \
+      | xargs -0 perl ${./nix-coreutils.pl}
+
+    # Written after the priority pass, with explicit priorities: wrapped
+    # programs above every rule, the wrapper rule just above wildcards.
     for base in base base-strict; do
       mkdir -p $tree/abstractions/$base.d
       cat > $tree/abstractions/$base.d/nixos <<'EOF'
@@ -112,19 +153,15 @@ buildGoModule (finalAttrs: {
       /etc/static/** r,
       # Nix wrappers: bin/foo is a script running bin/.foo-wrapped, which
       # keeps the wrapper's profile.
-      priority=3 /nix/store/*/{bin,sbin,libexec}/.*-wrapped* rix,
+      priority=1000 /nix/store/*/{bin,sbin,libexec}/.*-wrapped* rix,
+      # Wrapper packages: bin/foo of a wrapper runs bin/foo of the unwrapped
+      # package, another store path with the same name. A rule of the
+      # profile itself on @{exec_path} has a higher priority.
+      if defined @{exec_path} {
+        priority=1 @{exec_path} rix,
+      }
     EOF
     done
-
-    find $tree -type f -not -path "$tree/abi/*" -not -path "$tree/tunables/*" \
-      | while read -r f; do
-          case "$f" in
-            "$tree"/abstractions/*) p=1 ;;
-            *) p=2 ;;
-          esac
-          AA_PRIORITY=$p perl ${./exec-priority.pl} "$f" > "$f.tmp"
-          mv "$f.tmp" "$f"
-        done
 
     # (5) Modes are decided at load time.
     nixos=$PWD/nixos

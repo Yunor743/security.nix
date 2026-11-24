@@ -36,9 +36,10 @@ files do not load on NixOS. `packages/apparmor-d` builds them properly:
 | The profiles need apparmor.d's preprocessor (ABI conversion, directives, attachments), and NixOS is not one of its distributions | `prebuild` is built from source and run for a `nixos` distribution added by a small patch (same exclusions as Arch, plus pacman). |
 | Programs are not in `/usr/bin`: AppArmor matches the **resolved** path, `/nix/store/<hash>-pkg/bin/foo` | `@{bin}`, `@{sbin}` and `@{lib}` also cover `/nix/store/*/…` and the setuid wrappers `/run/wrappers/wrappers.*`, both in the tunables and in the values the preprocessor uses to write profile attachments (`profile ls /{{,usr/}bin/ls,nix/store/*/bin/ls,…}`). |
 | Files are read through `/etc → /etc/static → /nix/store` and `/run/current-system/sw` | Every profile may read the store and map its programs and libraries (`abstractions/base{,-strict}.d/nixos`). The store is world-readable anyway. |
-| `@{bin}/foo Px` and `@{bin}/* ix` were exact path vs glob; with the store both are globs: *"conflicting x modifiers"* | Exec rules on one program get an AppArmor 4.1 rule priority over wildcard rules, and profiles over abstractions (`exec-priority.pl`). Conflicts drop from 66 to 18. |
-| Nix wrappers: `bin/foo` is a script that runs `bin/.foo-wrapped` | `.*-wrapped*` programs inherit the wrapper's profile. |
-| Profiles that still do not compile would break the whole load | Every profile is compiled at build time; the 18 failing ones (desktop launchers of KDE, XFCE, LXQt, Hyprland, waybar…) are set aside in `share/apparmor.d/nixos/incompatible.tsv` with the error. |
+| `@{bin}/foo Px` and `@{bin}/* ix` were exact path vs glob; with the store both are globs: *"conflicting x modifiers"* | Exec rules get AppArmor 4.1 rule priorities: upstream priorities are kept in order (×10), then a rule on one program wins over a wildcard rule, profiles over abstractions (`exec-priority.pl`). |
+| Nix wrappers: `bin/foo` is a script that runs `bin/.foo-wrapped`, or a wrapper package runs the same name in another store path | `.*-wrapped*` programs and the profile's own `@{exec_path}` inherit the wrapper's profile. |
+| Layout: helpers FHS distributions put in `lib/<pkg>/` are in `libexec/` (`sshd-session`, `sshd-auth`…), session scripts in the package's `share/`, coreutils is one multi-call binary, `unix_chkpwd` is a setuid wrapper | Exec rules and attachments get the NixOS path too (`nix-libexec.pl`, `nix-coreutils.pl`, `/usr/share` → `/nix/store/*/share`); a few per-profile fixes (dockerd's `libexec/docker/dockerd`, sddm's weston greeter). |
+| A profile that does not compile would break the whole load | Every profile is compiled at build time; a failing one is set aside in `share/apparmor.d/nixos/incompatible.tsv` with the error. Currently none: all 1595 compile. |
 
 ## Modes
 
@@ -71,7 +72,7 @@ security.apparmor-d.extraTunables = ''
 
 ```sh
 aa-status                         # loaded profiles and their mode
-journalctl -k --grep apparmor     # denials (complain: ALLOWED, enforce: DENIED)
+journalctl --grep apparmor        # denials (complain: ALLOWED, enforce: DENIED)
 aa-log                            # apparmor.d's log viewer
 ```
 
@@ -93,21 +94,19 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
 - VM test `apparmor-d`: 1982 profiles loaded (sub-profiles included), `top`
   runs as `top (enforce)` from the store, an enforced local override denies,
   a reload keeps everything, the cache is used.
-- `owned` (Hyprland desktop, impermanence): boots in complain mode with
-  every profile loaded; sshd, sddm, dockerd, NetworkManager, sudo… run in
-  their profiles. First boot 2 min 15 s (compilation), then 14 s in total
-  with the profiles loaded from the cache in 1.7 s.
+- `owned` (Hyprland desktop, impermanence): boots in complain mode with all
+  1595 profiles loaded; sshd/sshd-session, sddm and its helpers, dockerd,
+  NetworkManager, sudo… run in their profiles, and a full boot plus desktop
+  login produces a single unmatched transition (`//null-` child), down from
+  about 10 000. First boot 2 min 15 s (compilation), then 14 s in total with
+  the profiles loaded from the cache.
 
 ## Known limits
 
-- Some packages lay out their programs differently than FHS distributions:
-  `libexec/sshd-session` where apparmor.d expects `lib/ssh/sshd-session`,
-  `libexec/sddm-helper` for `lib/sddm/sddm-helper`. The parent profile then
-  does not find the transition to the child profile: in complain mode the
-  activity is logged under `…//null-…` children. Map them with an alias in
-  `extraTunables` (e.g. `alias /usr/lib/ssh/sshd-session -> ${pkgs.openssh}/libexec/sshd-session,`)
-  or a local override.
-- 18 profiles do not compile with store paths (see `incompatible.tsv`).
+- A package laid out differently than the cases above leaves its parent
+  profile without a transition: in complain mode the activity is logged
+  under `…//null-…` children. Add the store path with a local override
+  (`localOverrides.<parent> = "/nix/store/*/libexec/foo Px,";`).
 - The first load compiles every profile (minutes on small machines); keep
   `/var/cache/apparmor-d` on persistent storage.
 
