@@ -265,6 +265,23 @@ in
       '';
     };
 
+    watchMountNamespaces = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Watch file accesses made inside other mount namespaces
+        (`allow_filesystem_mark`): systemd services with `PrivateTmp`,
+        `ProtectSystem`..., containers, bwrap/Flatpak sandboxes.
+
+        fapolicyd is not container aware: with this on, the processes of a
+        container are judged by the host policy, under the container's own
+        paths, and the `nixos` profile denies them (Docker/Podman containers
+        cannot start). Turning it off lets containers run, but whatever runs
+        in a mount namespace (hardened services included) is then not
+        mediated by fapolicyd; host sessions stay covered.
+      '';
+    };
+
     scanners = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = lib.optional (config.services.rustinel.enable or false) (
@@ -372,7 +389,7 @@ in
         integrity = "none";
         syslog_format = "rule,dec,perm,auid,pid,exe,:,path,ftype,trust";
         rpm_sha256_only = false;
-        allow_filesystem_mark = true;
+        allow_filesystem_mark = cfg.watchMountNamespaces;
         report_interval = 0;
         reset_strategy = "never";
         timing_collection = "off";
