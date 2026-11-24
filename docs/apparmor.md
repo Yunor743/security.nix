@@ -110,6 +110,19 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
 - The first load compiles every profile (minutes on small machines); keep
   `/var/cache/apparmor-d` on persistent storage.
 
+## Updating apparmor.d
+
+The package is pinned to one apparmor.d commit. To update it:
+
+```sh
+nix run nixpkgs#nix-update -- --flake --version=branch apparmor-d
+nix build .#apparmor-d                      # compiles every profile
+nix build .#checks.x86_64-linux.apparmor-d  # VM test
+```
+
+The workflow `.github/workflows/update-apparmor-d.yml` does this weekly and
+opens a pull request listing the profiles set aside.
+
 ## Recovery
 
 - Boot the previous generation, or add `apparmor=0` to the kernel command

@@ -1,0 +1,85 @@
+# Weekly update of apparmor.d (packages/apparmor-d) to the latest upstream
+# commit. The package build compiles every profile, so a broken update fails
+# here; profiles that no longer compile are listed in the pull request.
+#
+# Requires: Settings > Actions > General > "Allow GitHub Actions to create
+# and approve pull requests".
+name: update apparmor.d
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM (NixOS VM test)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Update source, hash and vendorHash
+        id: update
+        run: |
+          old=$(nix eval --raw .#apparmor-d.src.rev)
+          nix run nixpkgs#nix-update -- --flake --version=branch apparmor-d
+          new=$(nix eval --raw .#apparmor-d.src.rev)
+          echo "old=$old" >> "$GITHUB_OUTPUT"
+          echo "new=$new" >> "$GITHUB_OUTPUT"
+          if [ "$old" = "$new" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (compiles every profile)
+        if: steps.update.outputs.changed == 'true'
+        run: |
+          nix build -L .#apparmor-d
+          {
+            echo 'report<<EOF'
+            echo "Profiles: $(wc -l < result/share/apparmor.d/nixos/profiles)"
+            echo "Set aside (do not compile on NixOS): $(wc -l < result/share/apparmor.d/nixos/incompatible.tsv)"
+            echo
+            cut -f1,2 result/share/apparmor.d/nixos/incompatible.tsv | head -n 50 \
+              | sed 's/^/    /'
+            echo EOF
+          } >> "$GITHUB_OUTPUT"
+        id: build
+
+      - name: VM test
+        if: steps.update.outputs.changed == 'true'
+        run: nix build -L .#checks.x86_64-linux.apparmor-d
+
+      - uses: peter-evans/create-pull-request@v7
+        if: steps.update.outputs.changed == 'true'
+        with:
+          branch: update/apparmor-d
+          commit-message: "apparmor-d: update to ${{ steps.update.outputs.new }}"
+          title: "apparmor-d: update to ${{ steps.update.outputs.new }}"
+          body: |
+            roddhjav/apparmor.d ${{ steps.update.outputs.old }} → ${{ steps.update.outputs.new }}
+            (https://github.com/roddhjav/apparmor.d/compare/${{ steps.update.outputs.old }}...${{ steps.update.outputs.new }})
+
+            Package build and the `apparmor-d` VM test passed.
+
+            ${{ steps.build.outputs.report }}
+
+            Before merging: check the set-aside profiles above, and test on a
+            host in complain mode if many profiles changed.
+          delete-branch: true
