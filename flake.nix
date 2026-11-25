@@ -49,6 +49,8 @@
           packages.minisoc-ui = pkgs.callPackage ./packages/minisoc-ui {
             minisoc = pkgs.callPackage ./packages/minisoc { };
           };
+          packages.shirudo-kernel = pkgs.callPackage ./packages/shirudo/kernel.nix { };
+          packages.shirudo = pkgs.callPackage ./packages/shirudo { };
 
           checks =
             let
@@ -64,6 +66,7 @@
                 apparmor-d = pkgs.callPackage ./checks/apparmor-test.nix { inherit self; };
                 usbguard = pkgs.callPackage ./checks/usbguard-test.nix { inherit self; };
                 crowdsec-eval = pkgs.callPackage ./checks/crowdsec-eval.nix { inherit self nixpkgs; };
+                shirudo = pkgs.callPackage ./checks/shirudo-test.nix { inherit self; };
                 # SELinux VM tests from nix-selinux (enforcing boots, zero denials).
                 selinux-enforcing = pkgs.testers.runNixOSTest {
                   imports = [ ./checks/selinux/enforcing.nix ];
@@ -109,6 +112,7 @@
         selinux = import ./modules/selinux;
         usbguard = import ./modules/usbguard.nix;
         crowdsec = import ./modules/crowdsec.nix;
+        shirudo = import ./modules/shirudo.nix;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
       };

@@ -9,6 +9,7 @@
 
 let
   mlib = import ../modules/minisoc-lib.nix { inherit lib; };
+  vectorBuildable = import ./vector-buildable.nix { inherit vector; };
   src = parser: pattern: {
     enable = true;
     paths = [ "/var/log/${parser}/*.log" ];
@@ -217,7 +218,7 @@ let
   };
   file = writeText "minisoc-vector-test.json" (builtins.toJSON config);
 in
-runCommandLocal "minisoc-vector-test" { nativeBuildInputs = [ vector ]; } ''
+runCommandLocal "minisoc-vector-test" { nativeBuildInputs = [ vectorBuildable ]; } ''
   export HOME=$TMPDIR
   vector validate --no-environment ${file}
   vector test ${file}

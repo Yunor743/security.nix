@@ -9,5 +9,6 @@
     ./selinux
     ./usbguard.nix
     ./crowdsec.nix
+    ./shirudo.nix
   ];
 }

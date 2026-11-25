@@ -38,6 +38,8 @@ NixOS packages and modules for endpoint security and detection
 | `minisoc-ui` | MiniSOC desktop widget (Quickshell) |
 | `apparmor-d` | apparmor.d profiles (1500+) built with their preprocessor and adapted to the Nix store |
 | `secilc`, `selinux-policy-minimal` | SELinux CIL compiler and minimal policy (from nix-selinux) |
+| `shirudo` | shirudo (BPF security platform, pre-release): operator tools and target binary |
+| `shirudo-kernel` | bpf-next with shirudo's patches (signed-loader ABI) on the NixOS kernel configuration |
 
 ## NixOS Modules
 
@@ -52,6 +54,7 @@ NixOS packages and modules for endpoint security and detection
 | `security.selinux` | SELinux (reference policy, labelled store, confined services, login contexts), from nix-selinux |
 | `security.usbguard` | USBGuard: learn then enforce, devices present at first start allowed, declarative allow-list, rejected interface classes, decision log ([docs](docs/usbguard.md)) |
 | `security.crowdsec` | CrowdSec: local engine + firewall bouncer, sources of the enabled services, simulation then enforce, progressive bans, central API opt-in ([docs](docs/crowdsec.md)) |
+| `security.shirudo` | shirudo: patched bpf-next kernel, TPM, operator tooling and target staging ([docs](docs/shirudo.md)) |
 
 Home Manager: `homeManagerModules.minisoc` (`programs.minisoc`, the MiniSOC widget).
 

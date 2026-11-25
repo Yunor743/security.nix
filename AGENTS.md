@@ -25,6 +25,7 @@
 │   ├── minisoc-ui/          # Quickshell widget package (QML from minisoc/ui + wrapper)
 │   ├── yara-forge-rules/
 │   │   └── default.nix        # YARA Forge curated rules (zip)
+│   ├── shirudo/             # shirudo CLI (role operator/target) + bpf-next kernel (kernel.nix)
 │   └── sigma-rules/
 │       └── default.nix        # SigmaHQ detection rules (zip)
 ├── modules/
@@ -37,12 +38,14 @@
 │   ├── minisoc.nix            # NixOS module: services.minisoc (Vector collector, engine user service, AI)
 │   ├── minisoc-lib.nix        # Vector/VRL config generator shared with checks
 │   ├── minisoc-home.nix       # Home Manager module: programs.minisoc (widget, rules seed, prompts)
+│   ├── shirudo.nix            # NixOS module: security.shirudo (operator / target)
 │   └── security.nix           # Aggregation module: imports all of the above
 ├── checks/
 │   ├── nixos-test.nix         # VM integration tests (permissive, enforcing, known-libs profiles)
 │   ├── elastic-agent-test.nix # VM integration test (standalone agent wiring)
 │   ├── jit-hater-test.nix     # VM integration test (service stays active, nested config accepted)
 │   ├── minisoc-vector-test.nix # vector validate + vector test of the generated VRL parsers
+│   ├── shirudo-test.nix       # VM test: target on the patched kernel + swtpm, operator genkey
 │   └── minisoc-test.nix       # VM test: collector -> engine -> filters/lifecycle/AI guardrails -> widget, HM
 ├── docs/minisoc.md           # MiniSOC documentation
 ├── example/
@@ -67,6 +70,7 @@
 - **USBGuard** (`security.usbguard`, docs/usbguard.md). On top of nixpkgs' services.usbguard: own daemon conf (ExecStart mkForce, nixpkgs hardening kept); `/var/lib/usbguard/rules.conf` = a NixOS-managed block between marker lines (rewritten by an ExecStartPre `+` script with awk exact-line matching: sed regex escaping duplicated it) + kept learned rules (generate-policy once, `allow-device -p`). learn = ImplicitPolicyTarget allow. `usbguard-events.service` parses `usbguard watch` **PolicyApplied** events (PolicyChanged is not emitted when a device stays blocked) into `decision=… by=default|rule` lines; rule_id >= 4294967290 = default target. apparmor.d's usbguard-daemon profile needed /var/lib/usbguard (packages/apparmor-d fix).
 - **CrowdSec** (`security.crowdsec`, docs/crowdsec.md). On top of nixpkgs' services.crowdsec + crowdsec-firewall-bouncer; supports both nixpkgs shapes (`localConfig`+`settings.general` <= 25.11, `settings.*` >= 26.05) via `options.services.crowdsec.settings.type.getSubOptions [] ? config`. 26.05 writes profiles/simulation with systemd-tmpfiles: no `%` in values (specifiers), and the engine needs a restart on change (restartTriggers hash). `duration_expr` belongs to the profile, not the decision. Hub needs network at start: no VM test, `checks/crowdsec-eval.nix` evaluates instead. Test attacks on a host: network namespace with 203.0.113.7 (private ranges are whitelisted by crowdsecurity/whitelists); `ip netns exec` is blocked by apparmor.d (use nsenter).
 - **SELinux** (`security.selinux`, docs/selinux.md, modules/selinux/selinux.md). Vendored from nix-selinux (commit 4eb2952, MIT). Needs the systemd initrd. security.nix changes are tagged `[security.nix]`: `pathSubstitutions` (file_contexts.subs, for impermanence), `pamServices` (pam_selinux on systemd-user and the display manager), `userContextServices` (SELinuxContext= for Home Manager activations, whose dbus-run-session would otherwise be system_dbusd_t) and nixos.te rules found on owned. Mutually exclusive with apparmor-d. Rebuilds systemd, PAM, OpenSSH, coreutils, dbus-broker with SELinux (long first build). owned (Hyprland/SDDM desktop) boots and logs in enforcing. `mutableLabelRevision` includes relabelPaths, otherwise adding a path never relabels it.
+- **shirudo** (`security.shirudo`, docs/shirudo.md, pre-release upstream). `packages/shirudo/kernel.nix` is bpf-next at the commit shirudo pins + its patches (0001, 0002, 0020-0024) on the regular NixOS kernel config. `BPF_FMODRET_SCAN` is gated in Kconfig by `tools/bpf/resolve_btfids/llvm-mc.sh`: it needs `LLVM_CONFIG` (extraMakeFlags) and LLVM's system libs (libxml2, zlib, zstd, ncurses) in depsBuildBuild, otherwise it is silently dropped ("unused option") or resolve_btfids fails to link. Do not set BLK_DEV_DM/DM_VERITY = yes (repeated-question loop with NixOS' config). The CLI is built against `kernel.dev/lib/modules/<modDirVersion>/build/vmlinux` (`BPF_VMLINUX_BTF`; the build host has no /sys/kernel/btf of that kernel). Only the operator package embeds clang (`SHIRUDO_CLANG_PATH`, `shirudo build`, upstream requires clang 23: llvmPackages_23): 1.6 GB vs 95 MB for the target. The operator files come from upstream's `install-operator` run on `Makefile.shirudo` with the dirs passed explicitly (the top Makefile also builds quote-check's static OpenSSL; `-o quote-check` + a placeholder skips it); the VM test builds and signs `share/shirudo/examples/basic.bpf.c`. shirudo `mlockall`s: run it under `prlimit --memlock=unlimited:unlimited` from a shell. `keysDir` must stay `/var/lib/shirudo/keys` for `shirudo status` to recognise an operator. Target units are generated from `systemd/*.service.in` (`@bindir@`) and only enabled with `enforce`, which asserts no unsigned BPF loader (rustinel, jit-hater). Not ported: the dracut boot chain (signed dm-verity images) — enforcement on NixOS needs it.
 
 ## Build & Development Commands
 
