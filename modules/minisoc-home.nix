@@ -231,6 +231,17 @@ in
       };
     };
 
+    web.desktopEntry = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        A "MiniSOC" application entry that opens the browser UI
+        (`minisoc web --open`; needs `services.minisoc.web.enable` on the
+        host). The UI takes its colors and fonts from the same `ui` options
+        as the widget.
+      '';
+    };
+
     filter.initialRules = lib.mkOption {
       type = lib.types.nullOr (lib.types.listOf lib.types.attrs);
       default = null;
@@ -267,6 +278,19 @@ in
     // lib.mapAttrs' (
       n: text: lib.nameValuePair "minisoc/prompts/${n}.md" { inherit text; }
     ) cfg.prompts;
+
+    xdg.desktopEntries.minisoc-web = lib.mkIf cfg.web.desktopEntry {
+      name = "MiniSOC";
+      genericName = "Security alerts";
+      comment = "Personal SOC: alerts, triage, filter rules (browser UI)";
+      exec = "${lib.getExe cfg.cliPackage} web --open";
+      icon = "security-high";
+      terminal = false;
+      categories = [
+        "System"
+        "Security"
+      ];
+    };
 
     home.activation.minisocSeedRules = lib.mkIf (cfg.filter.initialRules != null) (
       lib.hm.dag.entryAfter [ "writeBoundary" ] ''

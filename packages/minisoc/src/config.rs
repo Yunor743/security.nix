@@ -22,6 +22,7 @@ pub struct Config {
     pub filter: FilterCfg,
     pub retention: RetentionCfg,
     pub ai: AiCfg,
+    pub web: WebCfg,
 }
 
 impl Default for Config {
@@ -37,6 +38,7 @@ impl Default for Config {
             filter: FilterCfg::default(),
             retention: RetentionCfg::default(),
             ai: AiCfg::default(),
+            web: WebCfg::default(),
         }
     }
 }
@@ -99,6 +101,23 @@ pub struct RetentionCfg {
     pub export_recent: usize,
     pub export_discarded: usize,
     pub export_filtered: usize,
+}
+
+/// `minisoc web`: the browser UI (loopback only, token in the runtime dir).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebCfg {
+    /// Loopback address and port; `$MINISOC_WEB_LISTEN` overrides it (one
+    /// port per user on a shared host).
+    pub listen: String,
+}
+
+impl Default for WebCfg {
+    fn default() -> Self {
+        Self {
+            listen: "127.0.0.1:8743".into(),
+        }
+    }
 }
 
 impl Default for RetentionCfg {

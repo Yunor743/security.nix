@@ -245,6 +245,11 @@ let
       days = cfg.engine.retention.days;
       max_events = cfg.engine.retention.maxEvents;
     };
+    web.listen =
+      let
+        a = cfg.web.address;
+      in
+      "${if lib.hasInfix ":" a then "[${a}]" else a}:${toString cfg.web.port}";
     ai = {
       enable = cfg.ai.enable;
       inherit (cfg.ai) provider model endpoint;
@@ -491,6 +496,32 @@ in
           default = 20000;
           description = "Upper bound of stored events (pinned ones are kept).";
         };
+      };
+    };
+
+    web = {
+      enable = lib.mkEnableOption ''
+        the browser UI (`minisoc-web` user service): the widget's view and
+        actions in a browser tab. It listens on a loopback address only and
+        every API call needs the user's token (`minisoc web --open` opens it,
+        `minisoc web --url` prints the address)
+      '';
+      address = lib.mkOption {
+        type = lib.types.enum [
+          "127.0.0.1"
+          "::1"
+        ];
+        default = "127.0.0.1";
+        description = "Loopback address of the UI (never exposed on the network).";
+      };
+      port = lib.mkOption {
+        type = lib.types.port;
+        default = 8743;
+        description = ''
+          Port of the UI. Each user runs their own UI: on a host with several
+          users in `services.minisoc.users`, give the others a port with
+          `MINISOC_WEB_LISTEN` (e.g. `systemctl --user edit minisoc-web`).
+        '';
       };
     };
 
@@ -1102,6 +1133,33 @@ in
           environment.MINISOC_CONFIG = "/etc/minisoc/engine.json";
           serviceConfig = {
             ExecStart = "${lib.getExe cfg.package} engine";
+            Restart = "on-failure";
+            RestartSec = 5;
+            UMask = "0077";
+            NoNewPrivileges = true;
+            LockPersonality = true;
+            RestrictRealtime = true;
+            MemoryDenyWriteExecute = true;
+            SystemCallArchitectures = "native";
+            RestrictAddressFamilies = [
+              "AF_UNIX"
+              "AF_INET"
+              "AF_INET6"
+            ];
+          };
+        };
+
+        # Browser UI: same user, same rights as the engine; every action runs
+        # the `minisoc` CLI. Loopback only, token in $XDG_RUNTIME_DIR/minisoc.
+        systemd.user.services.minisoc-web = lib.mkIf cfg.web.enable {
+          description = "MiniSOC web UI";
+          documentation = [ "https://github.com/Yunor743/security.nix" ];
+          wantedBy = [ "default.target" ];
+          unitConfig.ConditionGroup = "minisoc";
+          restartTriggers = [ engineConfigFile ];
+          environment.MINISOC_CONFIG = "/etc/minisoc/engine.json";
+          serviceConfig = {
+            ExecStart = "${lib.getExe cfg.package} web";
             Restart = "on-failure";
             RestartSec = 5;
             UMask = "0077";

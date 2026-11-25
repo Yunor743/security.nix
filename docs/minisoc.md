@@ -48,9 +48,10 @@ MiniSOC works entirely without an LLM and without any remote service.
  │  → AI queue (optional)   │──── LLM provider (opt-in, local by default)
  └────────────┬─────────────┘
               ▼ $XDG_RUNTIME_DIR/minisoc/state.json (atomic, 0600)
- ┌──────────────────────────┐
- │ Quickshell widget        │  reads the state, runs `minisoc <action>`
- └──────────────────────────┘  as the user (never root)
+ ┌──────────────────────────┐ ┌──────────────────────────┐
+ │ Quickshell widget        │ │ Web UI (`minisoc web`)   │  both read the state and run
+ └──────────────────────────┘ └──────────────────────────┘  `minisoc <action>` as the user
+                                loopback + token             (never root)
 ```
 
 - **Collector** (`services.minisoc.collector`): [Vector](https://vector.dev)
@@ -68,6 +69,8 @@ MiniSOC works entirely without an LLM and without any remote service.
 - **AI analyzer**: in-process worker threads behind a bounded queue. The
   ingestion loop never waits for the model.
 - **UI** (`packages/minisoc-ui`): Quickshell 0.3 layer-shell widget.
+- **Web UI** (`minisoc web`, optional): the same view and actions in a
+  browser tab, served by a user service on a loopback port.
 
 The collector and the UI are independent: the engine also reads a per-user
 inbox (`minisoc ingest`), so MiniSOC keeps working with Vector stopped, and
@@ -387,12 +390,14 @@ it hides now (`hidden`): in *Manage ▸ Rules* (`12 since 24/11 14:22 · 3 in
 | `~/.config/minisoc/prompts/*.md` | user | runtime prompt overrides |
 | `~/.local/state/minisoc/` | user, 0700 | SQLite store, backups, last-good rules, inbox |
 | `$XDG_RUNTIME_DIR/minisoc/state.json` | user, 0600 | snapshot for the UI |
+| `$XDG_RUNTIME_DIR/minisoc/web.token`, `web.url` | user, 0600 | web UI access token (stable for the session) |
 
 - The collector runs as `minisoc-collector` with only `CAP_DAC_READ_SEARCH`
   (`collector.readAnyFile`, needed for Rustinel's root-only logs),
   `PrivateNetwork`, `ProtectSystem=strict`, a syscall filter and write
   access to its state directory only.
-- The engine and the widget run as the user. Nothing in the UI runs as root.
+- The engine, the widget and the web UI run as the user. Nothing in the UI
+  runs as root.
 - Spool readers are the members of `minisoc` (`services.minisoc.users`).
   The engine warns when the user rules file is group/world readable.
 
@@ -459,6 +464,52 @@ IPC (keybindings, scripts): `minisoc-ui-ipc call minisoc toggleManage`,
 `details <id>`, `close`, `tp <id>`, `fp <id>`, `closeAllFp`,
 `setProfile analyst`.
 
+## The web UI
+
+The widget's view and actions in a browser tab, for a bigger screen, a
+session without Quickshell, or longer triage: active (pinned + feed),
+closed, filtered, rules with their counters, AI proposals and AI status, a
+details pane (fields, raw line, AI analysis, history), "Create filter" with
+the YAML preview, explain, search and severity filters, keyboard shortcuts
+(`j`/`k` move, `t`/`f` close as TP/FP, `p` pin, `/` search, `Esc` close)
+and optional browser notifications.
+
+```nix
+services.minisoc.web.enable = true;   # user service minisoc-web, 127.0.0.1:8743
+```
+
+Then `minisoc web --open` (or the "MiniSOC" application entry the Home
+Manager module adds, `programs.minisoc.web.desktopEntry`). Links:
+`#alert=<id>` opens an alert, `#tab=rules` a tab.
+
+It follows the widget's design: it only reads `state.json` and runs
+`minisoc <action>` as the user, through a whitelist (pin, unpin, tp, fp,
+fp --all, reopen, analyze, filter create, filter rollback, proposal
+accept/reject, review); no shell, no free argument. Colors and fonts come
+from `~/.config/minisoc/ui.json` (`programs.minisoc.ui`).
+
+**Access.** Other local users can connect to a loopback port, so:
+
+- the server only binds a loopback address (refused otherwise);
+- every API call needs the user's token, 64 hex characters from
+  `/dev/urandom` in `$XDG_RUNTIME_DIR/minisoc/web.token` (0600, kept across
+  restarts of the service, gone at logout). `minisoc web --url` prints the
+  address with the token in the fragment, which the browser never sends; the
+  page stores it in its local storage and removes it from the address bar.
+  `--open` hands the browser a 0600 redirect page instead of the URL: a
+  process' arguments are readable by every local user;
+- the `Host` header must name the loopback address (DNS rebinding), a POST
+  from another origin is refused, and the page runs under a strict CSP
+  (`script-src 'self'`, no inline script or style, no framing);
+- data is inserted as text, never as HTML.
+
+One UI per user: on a host with several users in `services.minisoc.users`,
+give the others their own port with `MINISOC_WEB_LISTEN=127.0.0.1:8744`
+(`systemctl --user edit minisoc-web`).
+
+Through an SSH tunnel, forward the same port (`ssh -L 8743:127.0.0.1:8743`):
+the Host check refuses any other address (HTTP 421).
+
 ## Command line
 
 ```
@@ -476,6 +527,7 @@ minisoc filter validate [FILE] | list | draft <id> | create <id> | backups | rol
 minisoc proposals [--status pending] ; minisoc proposal accept|reject <n>
 minisoc ingest --source NAME [--parser json|raw] [FILE|-]
 minisoc prompts list | show NAME | edit NAME | path NAME | reset NAME
+minisoc web [--url | --open]           serve the browser UI (user service) / print its address / open it
 ```
 
 ## AI analysis

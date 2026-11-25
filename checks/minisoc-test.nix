@@ -158,12 +158,16 @@ pkgs.testers.runNixOSTest {
         uid = 1000;
         linger = true;
       };
+      # Another local user: reaches the loopback port, never the token.
+      users.users.bob.isNormalUser = true;
 
       services.minisoc = {
         enable = true;
         package = minisocPkg;
+        collector.package = import ./vector-buildable.nix { inherit (pkgs) vector; };
         users = [ "alice" ];
         integrations.rustinel.enable = true;
+        web.enable = true;
         # Home Manager seeds the user rules in this test.
         filter.seedUserFile = false;
         filter.systemRules = [
@@ -241,6 +245,7 @@ pkgs.testers.runNixOSTest {
         pkgs.grim
         aaProbe
         pkgs.jq
+        pkgs.curl
       ];
       fonts.packages = [ pkgs.dejavu_fonts ];
     };
@@ -437,12 +442,12 @@ pkgs.testers.runNixOSTest {
         wide = int(ipc("windowWidth"))
         assert wide > base, (base, wide)
         sh(f"su - alice -c '{env} grim /tmp/minisoc-details.png'")
-        machine.copy_from_vm("/tmp/minisoc-details.png", "")
+        machine.copy_from_machine("/tmp/minisoc-details.png")
         ipc("close")
         time.sleep(1)
         assert int(ipc("windowWidth")) == base
         sh(f"su - alice -c '{env} grim /tmp/minisoc-minimal.png'")
-        machine.copy_from_vm("/tmp/minisoc-minimal.png", "")
+        machine.copy_from_machine("/tmp/minisoc-minimal.png")
 
     with subtest("FP from the widget hides the alert at once and closes its details"):
         manual = find("fictional manual event")
@@ -470,8 +475,47 @@ pkgs.testers.runNixOSTest {
         ipc("toggleManage")
         time.sleep(1)
         sh(f"su - alice -c '{env} grim /tmp/minisoc-compact.png'")
-        machine.copy_from_vm("/tmp/minisoc-compact.png", "")
+        machine.copy_from_machine("/tmp/minisoc-compact.png")
         log = sh("cat /tmp/ui.log")
         assert "ReferenceError" not in log and "TypeError" not in log, log
+
+    with subtest("web UI: loopback only, per-user token, Host/Origin checks, actions through the CLI"):
+        import re, shlex
+        machine.wait_for_unit("minisoc-web.service", "alice")
+        machine.wait_until_succeeds("curl -sf http://127.0.0.1:8743/ | grep -q '<title>MiniSOC</title>'")
+        listen = sh("ss -ltnH 'sport = :8743'")
+        local = [l.split()[3] for l in listen.strip().splitlines()]
+        assert local == ["127.0.0.1:8743"], listen
+        csp = sh("curl -sI http://127.0.0.1:8743/ | grep -i '^content-security-policy'")
+        assert "script-src 'self'" in csp and "unsafe" not in csp, csp
+        url = ctl("web --url").strip()
+        token = url.split("#token=")[1]
+        assert re.fullmatch("[0-9a-f]{64}", token), url
+        sh("stat -c %a /run/user/1000/minisoc/web.token | grep -qx 600")
+        # Another local user reaches the port, not the token nor the data.
+        machine.fail("su - bob -c 'cat /run/user/1000/minisoc/web.token'")
+        code = lambda args: sh(f"curl -s -o /dev/null -w %{{http_code}} {args}").strip()
+        assert code("http://127.0.0.1:8743/api/state") == "401"
+        auth = f"-H 'Authorization: Bearer {token}'"
+        assert code(f"{auth} -H 'Host: rebind.example:8743' http://127.0.0.1:8743/api/state") == "421"
+        st = json.loads(sh(f"curl -sf {auth} http://127.0.0.1:8743/api/state"))
+        bulk = find("fictional bulk event")
+        assert any(e["id"] == bulk["id"] for e in st["recent"]), "the UI serves the engine state"
+        shown = json.loads(sh(f"curl -sf {auth} http://127.0.0.1:8743/api/show/{bulk['id']}"))
+        assert shown["id"] == bulk["id"] and shown["raw"], shown
+        post = lambda body, origin="http://127.0.0.1:8743": sh(
+            f"curl -s -w ' %{{http_code}}' {auth} -H 'Origin: {origin}' -d {shlex.quote(json.dumps(body))} http://127.0.0.1:8743/api/action")
+        assert post({"action": "tp", "id": bulk["id"]}, "http://evil.example").endswith(" 403")
+        assert post({"action": "fp", "id": "--all"}).endswith(" 400")
+        assert post({"action": "ingest"}).endswith(" 400")
+        assert post({"action": "tp", "id": bulk["id"], "reason": "checked from the web UI"}).endswith(" 200")
+        e = find("fictional bulk event")
+        assert e["closed"] and e["verdict"] == "tp" and e["closed_by"] == "user", e
+        assert post({"action": "reopen", "id": bulk["id"]}).endswith(" 200")
+        assert not find("fictional bulk event")["closed"]
+        # The token survives a restart (open tabs keep working).
+        user_systemctl("restart minisoc-web")
+        machine.wait_until_succeeds("curl -sf http://127.0.0.1:8743/ >/dev/null")
+        assert ctl("web --url").strip() == url
   '';
 }

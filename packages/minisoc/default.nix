@@ -14,6 +14,7 @@ rustPlatform.buildRustPackage {
       ./Cargo.lock
       ./src
       ./prompts
+      ./web
     ];
   };
 

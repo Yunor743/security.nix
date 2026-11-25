@@ -49,7 +49,7 @@ NixOS packages and modules for endpoint security and detection
 | `services.rustinel` | eBPF-based endpoint detection with Sigma, YARA, and IOC |
 | `services.elastic-agent` | Official Elastic Agent — standalone (direct Elasticsearch) or Fleet-managed |
 | `services.jit-hater` | Behavioral memory-threat detector — dumps suspicious memory pages for offline scanning |
-| `services.minisoc` | MiniSOC: Vector collector, per-user engine, alert_filter.yaml, optional AI (SOC N1) |
+| `services.minisoc` | MiniSOC: Vector collector, per-user engine, alert_filter.yaml, optional AI (SOC N1), web UI |
 | `security.apparmor-d` | AppArmor with the apparmor.d collection: global and per-profile modes, local overrides, cached loading |
 | `security.selinux` | SELinux (reference policy, labelled store, confined services, login contexts), from nix-selinux |
 | `security.usbguard` | USBGuard: learn then enforce, devices present at first start allowed, declarative allow-list, rejected interface classes, decision log ([docs](docs/usbguard.md)) |
@@ -453,7 +453,8 @@ systemd user service normalizes, de-duplicates and filters them with
 `~/.config/minisoc/alert_filter.yaml` (strict validation, hot reload, last
 valid version kept), stores their lifecycle (pin / close as true or false
 positive / re-open / filtered / analyzed, with a counter per rule since its
-last change) and a Quickshell widget shows them. An LLM (Ollama, OpenAI,
+last change) and a Quickshell widget or a browser tab (`minisoc web`, loopback +
+per-user token) shows them. An LLM (Ollama, OpenAI,
 Anthropic, Gemini, OpenRouter, OpenAI-compatible, custom) can optionally add
 a SOC N1 analysis, close benign alerts as FP, and, on a schedule, review its
 own exclusion rules from the alerts you closed as FP (and TP), so the noise
@@ -467,6 +468,7 @@ services.rustinel.enable = true;
 services.minisoc = {
   enable = true;
   users = [ "alice" ];
+  web.enable = true; # minisoc web --open
 };
 ```
 

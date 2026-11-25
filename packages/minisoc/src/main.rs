@@ -12,6 +12,7 @@ mod ingest;
 mod normalize;
 mod store;
 mod util;
+mod web;
 
 use clap::{Parser, Subcommand};
 
@@ -29,6 +30,15 @@ struct Cli {
 enum Cmd {
     /// Run the engine (normally started by systemd --user)
     Engine,
+    /// Serve the browser UI (normally started by systemd --user)
+    Web {
+        /// Print the address of the running UI, with its access token
+        #[arg(long)]
+        url: bool,
+        /// Open the running UI in the default browser
+        #[arg(long, conflicts_with = "url")]
+        open: bool,
+    },
     /// Engine, rules and AI status
     Status {
         #[arg(long)]
@@ -197,6 +207,9 @@ fn main() {
             Ok(e) => e.run(),
             Err(e) => Err(e),
         },
+        Cmd::Web { url: true, .. } => web::print_url(&cfg),
+        Cmd::Web { open: true, .. } => web::open(&cfg),
+        Cmd::Web { .. } => web::serve(&cfg, cli.config.clone()),
         Cmd::Status { json } => ctl::status(&cfg, json),
         Cmd::List { state, limit, json } => ctl::list(&cfg, &state, limit, json),
         Cmd::Show { id, json } => ctl::show(&cfg, &id, json),
