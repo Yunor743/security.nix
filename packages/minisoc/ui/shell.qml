@@ -106,19 +106,51 @@ ShellRoot {
     // ---------------------------------------------- notify-send per detection
     // First state load only learns what already exists (no startup spam);
     // every later change notifies for unseen active alerts. Severity ranks
-    // gate the noise; critical gets a sticky notification.
+    // gate the noise; critical gets a sticky notification. A storm must not
+    // become one process per alert: one notification per similarity group
+    // per cooldown, at most maxPerMinute in total, and the rest is counted
+    // into a single summary sent when the minute is over.
     property bool notifyInit: false
     property var seenAlerts: ({})
+    property var notifySent: []          // ms timestamps, last minute
+    property var notifyLastByFp: ({})    // fingerprint -> ms of its last notification
+    property var notifySuppressed: ({ count: 0, worst: -1, sources: {} })
+    readonly property var sevRank: ({ info: 0, low: 1, medium: 2, high: 3, critical: 4 })
+
+    function sendNotification(sev, title, body) {
+        const icons = { critical: "dialog-error", high: "dialog-warning", medium: "dialog-warning" };
+        const urgent = sev === "critical" || sev === "high";
+        Quickshell.execDetached(["notify-send",
+            "--app-name=MiniSOC",
+            "--icon=" + (icons[sev] || "dialog-information"),
+            "--urgency=" + (urgent ? "critical" : "normal"),
+            "--expire-time=" + (urgent ? 0 : 8000),
+            title, body]);
+    }
+    Timer {
+        id: notifySummary
+        interval: 60000
+        onTriggered: {
+            const s = root.notifySuppressed;
+            root.notifySuppressed = { count: 0, worst: -1, sources: {} };
+            if (s.count === 0) return;
+            const sev = Object.keys(root.sevRank).find(k => root.sevRank[k] === s.worst) || "info";
+            const by = Object.keys(s.sources).sort((a, b) => s.sources[b] - s.sources[a])
+                .map(k => k + " ×" + s.sources[k]).join(", ");
+            root.notifySent.push(Date.now());
+            root.sendNotification(sev, s.count + " more alert(s) not notified", by);
+        }
+    }
 
     function notifyAlerts(st) {
         const nc = (th.cfg && th.cfg.notify) ? th.cfg.notify : {};
-        const rank = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+        const rank = root.sevRank;
         const want = rank[nc.minimumSeverity] !== undefined ? rank[nc.minimumSeverity] : 1;
         const fresh = [];
         for (const e of (st.recent || [])) {
             if (!e || !e.id || root.seenAlerts[e.id]) continue;
             root.seenAlerts[e.id] = true;
-            if (!root.notifyInit) continue;
+            if (!root.notifyInit || nc.enable === false) continue;
             if (e.discarded || e.filtered_by) continue;
             const r = rank[e.severity] !== undefined ? rank[e.severity] : -1;
             if (r < want) continue;
@@ -135,16 +167,29 @@ ShellRoot {
             root.seenAlerts = s;
         }
         fresh.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+        const now = Date.now();
+        const perMinute = nc.maxPerMinute > 0 ? nc.maxPerMinute : 6;
+        const cooldown = (nc.cooldown >= 0 ? nc.cooldown : 300) * 1000;
+        root.notifySent = root.notifySent.filter(t => now - t < 60000);
+        const last = {};
+        for (const fp in root.notifyLastByFp)
+            if (now - root.notifyLastByFp[fp] < cooldown) last[fp] = root.notifyLastByFp[fp];
+        root.notifyLastByFp = last;
         for (const e of fresh) {
-            const icons = { critical: "dialog-error", high: "dialog-warning", medium: "dialog-warning" };
-            const urgent = e.severity === "critical" || e.severity === "high";
-            Quickshell.execDetached(["notify-send",
-                "--app-name=MiniSOC",
-                "--icon=" + (icons[e.severity] || "dialog-information"),
-                "--urgency=" + (urgent ? "critical" : "normal"),
-                "--expire-time=" + (urgent ? 0 : 8000),
+            const fp = e.fingerprint || e.id;
+            if (last[fp] !== undefined || root.notifySent.length >= perMinute) {
+                const s = root.notifySuppressed;
+                s.count += 1;
+                s.worst = Math.max(s.worst, rank[e.severity] !== undefined ? rank[e.severity] : 0);
+                s.sources[e.source || "minisoc"] = (s.sources[e.source || "minisoc"] || 0) + 1;
+                if (!notifySummary.running) notifySummary.start();
+                continue;
+            }
+            last[fp] = now;
+            root.notifySent.push(now);
+            root.sendNotification(e.severity,
                 (e.severity || "?").toUpperCase() + " - " + (e.source || "minisoc"),
-                e.message || ""]);
+                e.message || "");
         }
         root.notifyInit = true;
     }

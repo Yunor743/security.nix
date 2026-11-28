@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS events_fp ON events(fingerprint);
+CREATE INDEX IF NOT EXISTS events_fp_open ON events(fingerprint, discarded, last_seen);
 CREATE TABLE IF NOT EXISTS analyses (
   event_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, provider TEXT, model TEXT,
   result TEXT NOT NULL, confidence REAL, cached INTEGER NOT NULL DEFAULT 0
@@ -135,8 +136,18 @@ impl Store {
         Ok(())
     }
 
-    /// Insert or count a repeat. Returns true for a new event.
+    /// Insert or count a repeat of the same line. Returns true for a new event.
     pub fn upsert(&self, e: &Event, filtered_by: Option<&str>) -> R<bool> {
+        self.record(e, filtered_by, 0)
+    }
+
+    /// `upsert`, where a repeat is also, within `window_secs` of its last
+    /// occurrence, an open alert of the same similarity group with the same
+    /// severity and filter outcome: lines that only differ by a timestamp or
+    /// a pid (audit records...) become one alert whose `occurrences` grows,
+    /// so a storm costs one indexed lookup per line instead of a row each.
+    /// Closing the alert starts a new one. 0 disables the grouping.
+    pub fn record(&self, e: &Event, filtered_by: Option<&str>, window_secs: i64) -> R<bool> {
         let now = now_iso();
         if let Some(rule) = filtered_by {
             self.conn.execute(
@@ -150,6 +161,26 @@ impl Store {
                  ON CONFLICT(rule_id, day) DO UPDATE SET hits = hits + 1",
                 params![rule, &now[..10]],
             )?;
+        }
+        if window_secs > 0 && !self.exists(&e.id)? {
+            let since =
+                crate::util::format_ts(chrono::Utc::now() - chrono::Duration::seconds(window_secs));
+            let open: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT id FROM events WHERE fingerprint = ?1 AND discarded = 0 AND last_seen >= ?2
+                       AND severity = ?3 AND filtered_by IS ?4 ORDER BY last_seen DESC LIMIT 1",
+                    params![e.fingerprint, since, e.severity, filtered_by],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(id) = open {
+                self.conn.execute(
+                    "UPDATE events SET occurrences = occurrences + 1, last_seen = ?2 WHERE id = ?1",
+                    params![id, now],
+                )?;
+                return Ok(false);
+            }
         }
         let n = self.conn.execute(
             "INSERT OR IGNORE INTO events(id, ts, source, severity, sev_rank, event_type, message, fields, raw,
@@ -280,6 +311,40 @@ impl Store {
         }
         tx.commit()?;
         Ok(ids.len())
+    }
+
+    /// Delete every stored event of a similarity group (pinned ones are
+    /// kept) with its analyses, history and pending requests: recovery from
+    /// an event storm. Logs and the collector spool are not modified.
+    pub fn purge_fingerprint(&self, fp: &str) -> R<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let ids = "SELECT id FROM events WHERE fingerprint = ?1 AND pinned = 0";
+        for table in ["analyses", "analysis_requests"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE event_id IN ({ids})"),
+                [fp],
+            )?;
+        }
+        tx.execute(
+            &format!("DELETE FROM history WHERE event_id IN ({ids})"),
+            [fp],
+        )?;
+        tx.execute(
+            &format!("DELETE FROM proposals WHERE status = 'pending' AND event_id IN ({ids})"),
+            [fp],
+        )?;
+        let n = tx.execute(
+            "DELETE FROM events WHERE fingerprint = ?1 AND pinned = 0",
+            [fp],
+        )?;
+        tx.commit()?;
+        self.history(
+            None,
+            "user",
+            "purge",
+            json!({"fingerprint": fp, "events": n}),
+        )?;
+        Ok(n)
     }
 
     /// Re-open a closed alert (its verdict is cleared).
@@ -867,6 +932,37 @@ mod tests {
         assert!(s.upsert(&e, None).unwrap());
         assert!(!s.upsert(&e, None).unwrap());
         assert_eq!(s.list("active", 10).unwrap()[0]["occurrences"], 2);
+    }
+
+    #[test]
+    fn storm_of_similar_lines_is_one_alert_until_closed() {
+        let s = mem();
+        // Audit-like lines: unique raw (serial, pid), same similarity group.
+        let line = |i: u32| {
+            let rec = json!({"minisoc": {"source": "apparmor"}, "raw": format!("audit({i}): pid={i} denied"),
+                "parsed": {"severity": "medium", "message": format!("denied exec pid {i}"), "event_type": "apparmor_denied"}});
+            crate::normalize::normalize(&rec, &BTreeMap::new())
+        };
+        assert!(s.record(&line(0), None, 3600).unwrap());
+        for i in 1..500 {
+            assert!(!s.record(&line(i), None, 3600).unwrap());
+        }
+        let all = s.list("all", 10).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0]["occurrences"], 500);
+        // A different filter outcome or severity is not merged.
+        assert!(s.record(&line(900), Some("r"), 3600).unwrap());
+        // Closed: the next occurrence is a new alert.
+        let id = all[0]["id"].as_str().unwrap().to_string();
+        s.close(&id, "tp", "user", json!({})).unwrap();
+        assert!(s.record(&line(1000), None, 3600).unwrap());
+        // Window 0: one row per distinct line, as before.
+        assert!(s.record(&line(1001), None, 0).unwrap());
+        // Purge drops the whole group but not a pinned alert.
+        let fp = all[0]["fingerprint"].as_str().unwrap().to_string();
+        s.set_pinned(&id, true, "user").unwrap();
+        assert_eq!(s.purge_fingerprint(&fp).unwrap(), 3);
+        assert_eq!(s.list("all", 10).unwrap().len(), 1);
     }
 
     #[test]

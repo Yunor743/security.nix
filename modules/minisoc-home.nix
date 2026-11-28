@@ -199,7 +199,7 @@ in
             enable = lib.mkOption {
               type = lib.types.bool;
               default = true;
-              description = "Send a desktop notification (`notify-send`) for every new visible alert.";
+              description = "Send a desktop notification (`notify-send`) for new visible alerts (rate limited, see `maxPerMinute` and `cooldown`).";
             };
             minimumSeverity = lib.mkOption {
               type = lib.types.enum [
@@ -211,6 +211,22 @@ in
               ];
               default = "low";
               description = "Notify only for alerts at least this severe (default: every detection).";
+            };
+            maxPerMinute = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 6;
+              description = ''
+                Notifications sent per minute at most. Alerts over the limit are
+                counted into a single summary notification a minute later.
+              '';
+            };
+            cooldown = lib.mkOption {
+              type = lib.types.ints.unsigned;
+              default = 300;
+              description = ''
+                Seconds during which a new alert of an already notified
+                similarity group (same fingerprint) only goes to the summary.
+              '';
             };
           };
         };

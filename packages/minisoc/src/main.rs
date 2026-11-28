@@ -98,6 +98,16 @@ enum Cmd {
     Reopen {
         id: String,
     },
+    /// Delete every stored event of a similarity group (pinned ones are
+    /// kept), e.g. after an event storm. Logs and the spool are not modified
+    Purge {
+        /// Similarity fingerprint (`fingerprint` in `show --json`)
+        #[arg(long, required_unless_present = "like")]
+        fingerprint: Option<String>,
+        /// Purge the group of this event
+        #[arg(long, conflicts_with = "fingerprint")]
+        like: Option<String>,
+    },
     /// Run the AI filter review now (FP-closed alerts -> AI rules)
     Review {
         /// Show the changes without applying nor proposing them
@@ -233,6 +243,9 @@ fn main() {
             id: None, reason, ..
         } => ctl::close_all_fp(&cfg, reason.as_deref()),
         Cmd::Reopen { id } => ctl::restore(&cfg, &id),
+        Cmd::Purge { fingerprint, like } => {
+            ctl::purge(&cfg, fingerprint.as_deref(), like.as_deref())
+        }
         Cmd::Review {
             dry_run,
             show_input,

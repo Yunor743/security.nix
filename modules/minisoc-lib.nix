@@ -54,6 +54,15 @@ rec {
           ''
       )
       + lib.optionalString ((src.transform or null) != null) src.transform
+      # Key of the collector rate limit: the message once numbers (pids,
+      # serials, timestamps) are stripped, as in the engine's fingerprint.
+      + ''
+        rate_msg = .parsed.message
+        if rate_msg == null {
+          rate_msg = .raw
+        }
+        .minisoc.rate_key = md5(${builtins.toJSON name} + "|" + replace(encode_json(rate_msg), r'[0-9]+', "#"))
+      ''
       + (
         if (src.type or "file") == "journald" then
           # Only what the engine reads: journald adds dozens of fields.
@@ -231,9 +240,13 @@ rec {
       spoolDir,
       dataDir,
       journalctl ? "journalctl",
+      # { threshold; window; }: at most `threshold` lines of a pattern per
+      # `window` seconds reach the spool; null: no limit.
+      rateLimit ? null,
     }:
     let
       enabled = lib.filterAttrs (_: s: s.enable) sources;
+      parsed = map (n: "parse_${n}") (lib.attrNames enabled);
     in
     {
       data_dir = dataDir;
@@ -259,17 +272,29 @@ rec {
             }
         )
       ) enabled;
-      transforms = lib.mapAttrs' (
-        n: s:
-        lib.nameValuePair "parse_${n}" {
-          type = "remap";
-          inputs = [ "src_${n}" ];
-          source = vrl n s;
-        }
-      ) enabled;
+      transforms =
+        lib.mapAttrs' (
+          n: s:
+          lib.nameValuePair "parse_${n}" {
+            type = "remap";
+            inputs = [ "src_${n}" ];
+            source = vrl n s;
+          }
+        ) enabled
+        // lib.optionalAttrs (rateLimit != null) {
+          # A repeating line (a denial in a loop) would otherwise grow the
+          # spool without bound; distinct patterns are limited separately.
+          rate_limit = {
+            type = "throttle";
+            inputs = parsed;
+            key_field = "{{ minisoc.rate_key }}";
+            inherit (rateLimit) threshold;
+            window_secs = rateLimit.window;
+          };
+        };
       sinks.spool = {
         type = "file";
-        inputs = map (n: "parse_${n}") (lib.attrNames enabled);
+        inputs = if rateLimit != null then [ "rate_limit" ] else parsed;
         # Daily files; the engine tracks offsets per file (inode), and
         # systemd-tmpfiles ages old ones out.
         path = "${spoolDir}/events-%Y-%m-%d.ndjson";

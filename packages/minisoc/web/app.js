@@ -26,6 +26,10 @@ const S = {
   hidden: {},
   seen: {},
   notifyInit: false,
+  notifySent: [], // ms timestamps, last minute
+  notifyLastByFp: {}, // fingerprint -> ms of its last notification
+  notifySuppressed: [],
+  notifySummary: null,
   prefs: { notify: false },
   error: "",
   deepAlert: "",
@@ -296,15 +300,45 @@ function notifyAlerts(st) {
     S.seen = s;
   }
   if (!S.prefs.notify || !("Notification" in window) || Notification.permission !== "granted") return;
+  // Same limits as the widget: one per similarity group per cooldown, at
+  // most maxPerMinute, the rest in one summary a minute later.
+  const now = Date.now();
+  const perMinute = nc.maxPerMinute > 0 ? nc.maxPerMinute : 6;
+  const cooldown = (nc.cooldown >= 0 ? nc.cooldown : 300) * 1000;
+  S.notifySent = S.notifySent.filter((t) => now - t < 60000);
+  for (const fp in S.notifyLastByFp) if (now - S.notifyLastByFp[fp] >= cooldown) delete S.notifyLastByFp[fp];
   for (const e of fresh) {
+    const fp = e.fingerprint || e.id;
+    if (S.notifyLastByFp[fp] !== undefined || S.notifySent.length >= perMinute) {
+      S.notifySuppressed.push(e);
+      if (!S.notifySummary) S.notifySummary = setTimeout(notifySummary, 60000);
+      continue;
+    }
+    S.notifyLastByFp[fp] = now;
+    S.notifySent.push(now);
     const n = new Notification((e.severity || "?").toUpperCase() + " — " + (e.source || "minisoc"), {
       body: e.message || "",
-      tag: e.id,
+      tag: fp,
       icon: "/icon.svg",
       requireInteraction: e.severity === "critical" || e.severity === "high",
     });
     n.onclick = () => { window.focus(); select(e.id); };
   }
+}
+
+function notifySummary() {
+  const list = S.notifySuppressed;
+  S.notifySuppressed = [];
+  S.notifySummary = null;
+  if (!list.length || Notification.permission !== "granted") return;
+  const by = {};
+  for (const e of list) by[e.source || "minisoc"] = (by[e.source || "minisoc"] || 0) + 1;
+  S.notifySent.push(Date.now());
+  new Notification(list.length + " more alert(s) not notified", {
+    body: Object.keys(by).sort((a, b) => by[b] - by[a]).map((k) => k + " ×" + by[k]).join(", "),
+    tag: "minisoc-summary",
+    icon: "/icon.svg",
+  });
 }
 
 async function toggleNotify() {

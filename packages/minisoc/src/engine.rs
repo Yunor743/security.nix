@@ -12,12 +12,19 @@ use serde_json::{json, Value};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Spool records per tick (one transaction).
+const BUDGET: usize = 2000;
+
 pub struct Engine {
     pub cfg: Arc<Config>,
     pub store: Store,
     pub filters: FilterManager,
     pub analyzer: Option<Analyzer>,
     started_at: String,
+    /// The last poll stopped at its budget: more is waiting in the spool.
+    backlog: bool,
+    /// Alerts created since the last retention pass.
+    created: i64,
 }
 
 impl Engine {
@@ -58,6 +65,8 @@ impl Engine {
             filters,
             analyzer,
             started_at: now_iso(),
+            backlog: false,
+            created: 0,
         })
     }
 
@@ -80,7 +89,9 @@ impl Engine {
         let dirs = self.cfg.all_spool_dirs();
         let mut to_analyze = vec![];
         let tx = self.store.conn.unchecked_transaction().ok();
-        let n = ingest::poll(&self.store, &dirs, 2000, |rec| {
+        let window = self.cfg.aggregate_window_secs;
+        let mut created = 0;
+        let n = ingest::poll(&self.store, &dirs, BUDGET, |rec| {
             let e = normalize::normalize(&rec, &self.cfg.sources);
             let view = EventView {
                 source: &e.source,
@@ -99,17 +110,21 @@ impl Engine {
                     Value::Array(self.filters.ruleset.explain(&view))
                 );
             }
-            match self.store.upsert(&e, rule.as_deref()) {
+            match self.store.record(&e, rule.as_deref(), window) {
                 Ok(true) if rule.is_none() => {
+                    created += 1;
                     to_analyze.push((e.id.clone(), e.fingerprint.clone(), e.severity.clone()))
                 }
-                Ok(_) => {}
+                Ok(true) => created += 1,
+                Ok(false) => {}
                 Err(err) => crate::error!("store: {err}"),
             }
         });
         if let Some(tx) = tx {
             let _ = tx.commit();
         }
+        self.backlog = n >= BUDGET;
+        self.created += created;
         if n > 0 {
             debug!("ingested {n} record(s)");
             changed = true;
@@ -207,24 +222,37 @@ impl Engine {
         let mut last_prune = Instant::now() - Duration::from_secs(3600);
         loop {
             let changed = self.tick();
-            if last_prune.elapsed() >= Duration::from_secs(3600) {
-                let r = &self.cfg.retention;
+            let r = &self.cfg.retention;
+            // Hourly, or as soon as a burst of new alerts could exceed the cap.
+            if last_prune.elapsed() >= Duration::from_secs(3600)
+                || self.created >= (r.max_events / 10).max(1000)
+                    && last_prune.elapsed() >= Duration::from_secs(60)
+            {
                 match self.store.prune(r.days, r.max_events) {
                     Ok(n) if n > 0 => info!("retention: pruned {n} event(s)"),
                     _ => {}
                 }
                 last_prune = Instant::now();
+                self.created = 0;
             }
             let dv = self.store.data_version();
-            // Periodic refresh keeps the AI status in the UI current.
-            if changed || dv != last_version || last_export.elapsed() >= Duration::from_secs(10) {
+            // Periodic refresh keeps the AI status in the UI current. While
+            // catching up a backlog, publish at most once per poll interval.
+            let due = !self.backlog || last_export.elapsed() >= poll;
+            if due
+                && (changed
+                    || dv != last_version
+                    || last_export.elapsed() >= Duration::from_secs(10))
+            {
                 if let Err(e) = self.export() {
                     crate::error!("cannot write {}: {e}", self.cfg.state_json().display());
                 }
                 last_version = dv;
                 last_export = Instant::now();
             }
-            std::thread::sleep(poll);
+            if !self.backlog {
+                std::thread::sleep(poll);
+            }
         }
     }
 }
@@ -254,8 +282,8 @@ mod tests {
         assert_eq!(mode(&d.join("cfg/alert_filter.yaml")), 0o600);
         assert_eq!(mode(&d.join("cfg")), 0o700);
         let lines: String = (0..3).map(|i| format!(
-            "{{\"minisoc\":{{\"source\":\"snort\",\"parser\":\"json\"}},\"raw\":\"r{i}\",\"parsed\":{{\"event_type\":\"{}\",\"severity\":\"info\",\"message\":\"m{i}\",\"source_ip\":\"127.0.0.1\"}}}}\n",
-            if i == 0 { "test_alert" } else { "scan" })).collect();
+            "{{\"minisoc\":{{\"source\":\"snort\",\"parser\":\"json\"}},\"raw\":\"r{i}\",\"parsed\":{{\"event_type\":\"{}\",\"severity\":\"info\",\"message\":\"m{}\",\"source_ip\":\"127.0.0.1\"}}}}\n",
+            if i == 0 { "test_alert" } else { "scan" }, ["a", "b", "c"][i])).collect();
         std::fs::write(spool.join("events-2026-11-23.ndjson"), lines).unwrap();
         assert!(eng.tick());
         eng.export().unwrap();

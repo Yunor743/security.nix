@@ -17,6 +17,10 @@ pub struct Config {
     pub state_dir: String,
     pub runtime_dir: String,
     pub poll_interval_ms: u64,
+    /// Similar lines (same similarity fingerprint, severity and filter
+    /// outcome) within this many seconds of the last one count as
+    /// occurrences of the same open alert; 0: only identical lines.
+    pub aggregate_window_secs: i64,
     pub log_level: String,
     pub sources: BTreeMap<String, SourceCfg>,
     pub filter: FilterCfg,
@@ -33,6 +37,7 @@ impl Default for Config {
             state_dir: "$XDG_STATE_HOME/minisoc".into(),
             runtime_dir: "$XDG_RUNTIME_DIR/minisoc".into(),
             poll_interval_ms: 1000,
+            aggregate_window_secs: 3600,
             log_level: "info".into(),
             sources: BTreeMap::new(),
             filter: FilterCfg::default(),

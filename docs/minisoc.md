@@ -58,12 +58,16 @@ MiniSOC works entirely without an LLM and without any remote service.
   0.55 file sources and one VRL `remap` per source. Vector persists read
   positions, follows globs, new files, rotation and truncation. Each line
   becomes a spool record `{minisoc: {source, parser, file, parse_error},
-  raw, parsed}`; lines that fail to parse are kept (`parse_error`).
+  raw, parsed}`; lines that fail to parse are kept (`parse_error`). A
+  per-pattern rate limit (`collector.rateLimit`, default 100 lines per 60 s
+  for each source + message with its numbers stripped) keeps a line
+  repeating in a loop from growing the spool without bound.
 - **Engine** (`packages/minisoc`, Rust): tails the spool (offset per file
   and inode, resumes after restart, partial lines wait), normalizes,
-  de-duplicates (stable id = hash of source + raw line, repeats increment
-  `occurrences`), applies the rules, stores, feeds the AI queue, prunes and
-  publishes `state.json`.
+  de-duplicates (stable id = hash of source + raw line; similar lines of an
+  open alert are grouped, see below; repeats increment `occurrences`),
+  applies the rules, stores, feeds the AI queue, prunes and publishes
+  `state.json`.
 - **Store**: SQLite (WAL) holding metadata and lifecycle only. Original logs
   and the spool are never modified.
 - **AI analyzer**: in-process worker threads behind a bounded queue. The
@@ -254,6 +258,15 @@ need no code: declare them as above once the tool writes its log.
 - `severity` ∈ `critical`, `high`, `medium`, `low`, `info`, `unknown`.
 - `id` is stable (hash of source + original line): the same line always maps
   to the same alert, repeats increase `occurrences`.
+- Similar lines are grouped too: within `engine.aggregateWindow` (default
+  3600 s) of its last occurrence, a line with the same `fingerprint`,
+  severity and filter outcome as an open (not closed) alert increases that
+  alert's `occurrences` and `last_seen` instead of creating a new one. An
+  audit denial repeating in a loop (each record has its own serial and
+  timestamp) is then one alert, one notification and one AI request.
+  Closing it as TP/FP starts a new alert on the next occurrence. The first
+  line's `raw` and `fields` are kept. `aggregateWindow = 0` only merges
+  identical lines.
 - The details view and `minisoc show <id> --json` also give `raw` (the
   original line), `meta` (file, parser, parse error), `fingerprint`
   (similarity key: same source/type/message once numbers and hex ids are
@@ -458,7 +471,11 @@ until dismissed). Alerts that are already closed or filtered never
 notify, and nothing fires on widget startup for pre-existing alerts.
 `ui.notify.enable` (default `true`) turns it off;
 `ui.notify.minimumSeverity` (default `low`) raises the floor (`medium`,
-`high`, `critical`).
+`high`, `critical`). A burst never becomes one notification per alert: one
+per similarity group (`fingerprint`) per `ui.notify.cooldown` (default
+300 s), at most `ui.notify.maxPerMinute` (default 6), and what goes over is
+counted into a single "N more alert(s)" summary a minute later. The web
+UI's browser notifications follow the same settings.
 
 IPC (keybindings, scripts): `minisoc-ui-ipc call minisoc toggleManage`,
 `details <id>`, `close`, `tp <id>`, `fp <id>`, `closeAllFp`,
@@ -519,6 +536,8 @@ minisoc show <id> [--json]          everything about one alert
 minisoc pin|unpin <id>
 minisoc tp <id> | fp <id> | fp --all   close as true / false positive (all: every active alert)
 minisoc reopen <id>                 re-open a closed alert (`restore`; `discard` = `fp`)
+minisoc purge --fingerprint FP | --like <id>   delete every stored event of a similarity group
+                                    (pinned kept; logs and spool untouched)
 minisoc review [--dry-run] [--show-input] [--json]   AI filter review now (dry run: change nothing;
                                     show-input: the redacted data sent, no request)
 minisoc explain <id>                why rules keep / exclude it
@@ -863,6 +882,12 @@ Ollama analysis in suggest mode + Home Manager widget):
   to `"low"`.
 - **Widget does not start with Hyprland**: no `graphical-session.target`;
   use `exec-once = minisoc-ui` and `ui.autostart = false`.
+- **Event storm** (a denial in a loop): fix the source (or put its profile
+  in complain mode), then `minisoc purge --like <id>` drops the stored
+  events of that group. The engine reads a spool backlog without pausing
+  between batches, and grouping keeps each line to one indexed lookup, so
+  it catches up on its own. Stores from before grouping existed can hold a
+  very large number of rows of one fingerprint: purge them once.
 - **Reset everything** (alerts, pins, history; logs untouched): stop the
   engine and remove `~/.local/state/minisoc/`.
 

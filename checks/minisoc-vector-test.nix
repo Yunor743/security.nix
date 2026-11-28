@@ -54,6 +54,10 @@ let
       );
     };
     spoolDir = "/tmp/spool";
+    rateLimit = {
+      threshold = 100;
+      window = 60;
+    };
     dataDir = "/tmp/data";
   };
   case = name: transform: line: assertions: {
@@ -125,6 +129,9 @@ let
       )
       (case "raw" "parse_app_raw" "plain text line" ''
         assert_eq!(.parsed.message, "plain text line")
+      '')
+      (case "rate-key-ignores-numbers" "parse_app_raw" "denied pid=4242 serial 17" ''
+        assert_eq!(.minisoc.rate_key, md5("app_raw|\"denied pid=# serial #\""))
       '')
       (case "apparmor-denied" "parse_mac_apparmor"
         ''apparmor="DENIED" operation="open" class="file" profile="top" name="/etc/shadow" pid=42 comm="top" requested_mask="r" denied_mask="r" fsuid=0 ouid=0''

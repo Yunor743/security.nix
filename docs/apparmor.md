@@ -113,7 +113,9 @@ D-Bus is started in apparmor.d's `dbus-system` / `dbus-session` profiles
   the greeter's DRM/input devices passed by logind, session tty/log of
   `start-hyprland`, `runc`/`crun` stubs from stock AppArmor so `px` to
   container runtimes resolves, Docker CLI wrapper, fusermount setuid
-  wrapper, qemu-ga/spice-vdagentd/cups/tmpfiles/resolvconf paths…) and three
+  wrapper, qemu-ga/spice-vdagentd/cups/tmpfiles/resolvconf paths,
+  `tailscaled` switching to the `resolvconf` profile instead of running the
+  openresolv wrapper script under its own…) and three
   local overrides specific to that host (Ambxst config, `/.swapvol`, Docker
   storage under `/nix/persist` seen through ``).
 - `owned` (Hyprland desktop, impermanence): boots in complain mode with all

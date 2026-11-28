@@ -189,6 +189,11 @@ buildGoModule (finalAttrs: {
       capability sys_nice,'
     # nscd socket inherited from the caller.
     fix resolvconf '  @{run}/nscd/socket rw,'
+    # tailscaled runs resolvconf under its own profile (ix): on NixOS it is
+    # a wrapper script around openresolv, a shell script running coreutils,
+    # all denied there (tailscaled then loops on stop). The resolvconf
+    # profile has the NixOS adaptations: switch to it, above the ix rule.
+    fix tailscaled '  priority=4 @{sbin}/resolvconf rPx -> resolvconf,'
     fix containerd '  @{sys}/fs/cgroup/**/cpu.max r,'
     # NixOS keeps the USBGuard rules and IPC ACLs in /var/lib/usbguard.
     fix usbguard-daemon '  /var/lib/usbguard/{,**} r,

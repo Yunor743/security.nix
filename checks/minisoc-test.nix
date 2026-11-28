@@ -357,11 +357,19 @@ pkgs.testers.runNixOSTest {
             ctl("ingest --source review_demo /tmp/noisy.ndjson")
         def noisy_events():
             return [e for e in events() if e["message"] == "fictional noisy tool started"]
+        def open_noisy():
+            return next((e for e in noisy_events() if not e["closed"]), None)
+        # The tool comes back after each FP closure: three closures.
         for n in range(3):
             noisy(n)
-        wait_for(lambda: len(noisy_events()) == 3, "3 noisy alerts")
-        for e in noisy_events():
+            e = wait_for(open_noisy, f"noisy alert {n}")
+            if n == 0:
+                # A line differing by a number only is an occurrence, not a new alert.
+                noisy(10)
+                wait_for(lambda: open_noisy()["occurrences"] == 2, "grouped occurrence")
+                assert len(noisy_events()) == 1, noisy_events()
             ctl(f"fp {e['id']}")
+        assert len(noisy_events()) == 3, noisy_events()
         out = ctl("review")
         print(out)
         assert "applied: create ai-review-" in out, out

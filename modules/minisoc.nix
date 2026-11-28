@@ -226,6 +226,7 @@ let
   engineConfig = {
     spool_dirs = lib.optional cfg.collector.enable spoolDir;
     poll_interval_ms = cfg.engine.pollIntervalMs;
+    aggregate_window_secs = cfg.engine.aggregateWindow;
     log_level = cfg.engine.logLevel;
     sources = lib.mapAttrs (_: s: {
       inherit (s) normalizer mapping;
@@ -324,6 +325,7 @@ let
       lib.recursiveUpdate (mlib.mkVectorConfig {
         inherit (cfg) sources;
         inherit spoolDir;
+        inherit (cfg.collector) rateLimit;
         dataDir = "${cfg.collector.stateDir}/data";
         journalctl = "${config.systemd.package}/bin/journalctl";
       }) cfg.collector.extraSettings
@@ -374,6 +376,33 @@ in
         type = lib.types.str;
         default = "7d";
         description = "Age after which spool files are removed by systemd-tmpfiles (original logs are never touched).";
+      };
+      rateLimit = lib.mkOption {
+        type = lib.types.nullOr (
+          lib.types.submodule {
+            options = {
+              threshold = lib.mkOption {
+                type = lib.types.ints.positive;
+                default = 100;
+                description = "Lines of one pattern let through per window.";
+              };
+              window = lib.mkOption {
+                type = lib.types.ints.positive;
+                default = 60;
+                description = "Window, in seconds.";
+              };
+            };
+          }
+        );
+        default = { };
+        description = ''
+          Per-pattern rate limit of the collector (Vector `throttle`): a
+          pattern is the source plus the message with its numbers stripped
+          (pids, serials, timestamps), so a denial repeating in a loop is
+          capped while other events go through. Lines over the limit are not
+          written to the spool (the alert's `occurrences` then counts what was
+          kept). `null` disables it.
+        '';
       };
       extraSettings = lib.mkOption {
         type = lib.types.attrs;
@@ -475,6 +504,18 @@ in
         type = lib.types.int;
         default = 1000;
         description = "Spool / rules polling interval.";
+      };
+      aggregateWindow = lib.mkOption {
+        type = lib.types.ints.unsigned;
+        default = 3600;
+        description = ''
+          Seconds during which similar lines (same similarity fingerprint,
+          severity and filter outcome: they only differ by numbers, ids or
+          timestamps) count as occurrences of the open alert instead of new
+          alerts. A repeating denial is then one alert with a growing counter,
+          and costs one indexed lookup per line. Closing the alert starts a new
+          one. 0: only identical lines are merged.
+        '';
       };
       logLevel = lib.mkOption {
         type = lib.types.enum [

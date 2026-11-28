@@ -169,6 +169,24 @@ pub fn restore(cfg: &Config, id: &str) -> Res {
     Ok(())
 }
 
+pub fn purge(cfg: &Config, fingerprint: Option<&str>, like: Option<&str>) -> Res {
+    let store = open_store(cfg)?;
+    let fp = match (fingerprint, like) {
+        (Some(fp), _) => fp.to_string(),
+        (None, Some(id)) => {
+            store
+                .event(id)
+                .map_err(|e| e.to_string())?
+                .ok_or(format!("no such event: {id}"))?
+                .fingerprint
+        }
+        _ => return Err("--fingerprint or --like is required".into()),
+    };
+    let n = store.purge_fingerprint(&fp).map_err(|e| e.to_string())?;
+    println!("purged {n} event(s) of fingerprint {fp} (pinned alerts kept)");
+    Ok(())
+}
+
 pub fn analyze(cfg: &Config, id: &str) -> Res {
     if !cfg.ai.enable {
         return Err("AI analysis is disabled (services.minisoc.ai.enable)".into());
