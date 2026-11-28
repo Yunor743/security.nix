@@ -488,41 +488,10 @@ The two are mutually exclusive.
 ## TODO
 
 - [ ] move the fortress example in microvm.nix
-- [x] fapolicyd.nix
-- [x] rustinel.nix
-- [x] elastic-agent
-- [x] jit-hater
-- [x] minisoc (local SOC: collector, filtering, triage UI, optional LLM)
 - [ ] kunai
-- [x] vulnix
-- [ ] hardened kernel
-- [ ] mineral.nix
-- [ ] lkrg / kspp
-- [x] selinux
-- [ ] IMA/EVM
-- [x] apparmor (+ apparmor.d)
 - [ ] falco / tracee / cilium
+- [ ] IMA/EVM
 - [ ] auditd
 - [ ] antivirus
-- [ ] usbguard
 - [ ] snort / suricata
-- [ ] canaries ?
-- [ ] sandboxes ?
-- [ ] ptrace hardening
-- [ ] procfs hardening (hidepid)
-
-## Future projects
-
-### SANDBOX : Wrap kunai-sandbox in Nix
-- https://why.kunai.rocks/blog/2024/10/02/kunai-malware-sandboxing
-- https://github.com/kunai-project/sandbox
-
-### Offensive machine
-- inspired by exegol
-
-### Check Sécurix
-- https://github.com/cloud-gouv/securix/
-
-### Check ANSSI hardening guide
-- https://blog.stephane-robert.info/docs/securiser/durcissement/anssi-bp-28/
 
