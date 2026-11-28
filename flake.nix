@@ -45,6 +45,7 @@
           packages.selinux-policy-minimal = pkgs.callPackage ./packages/selinux-policy-minimal {
             secilc = pkgs.callPackage ./packages/secilc { };
           };
+          packages.sbomnix = pkgs.callPackage ./packages/sbomnix { };
           packages.minisoc = pkgs.callPackage ./packages/minisoc { };
           packages.minisoc-ui = pkgs.callPackage ./packages/minisoc-ui {
             minisoc = pkgs.callPackage ./packages/minisoc { };
@@ -66,7 +67,11 @@
                 apparmor-d = pkgs.callPackage ./checks/apparmor-test.nix { inherit self; };
                 usbguard = pkgs.callPackage ./checks/usbguard-test.nix { inherit self; };
                 crowdsec-eval = pkgs.callPackage ./checks/crowdsec-eval.nix { inherit self nixpkgs; };
+                vulnscan-eval = pkgs.callPackage ./checks/vulnscan-eval.nix { inherit self nixpkgs; };
                 shirudo = pkgs.callPackage ./checks/shirudo-test.nix { inherit self; };
+                vulnix = pkgs.callPackage ./checks/vulnix-test.nix { inherit self; };
+                sbomnix = pkgs.callPackage ./checks/sbomnix-test.nix { inherit self; };
+                container-scan = pkgs.callPackage ./checks/container-scan-test.nix { inherit self; };
                 # SELinux VM tests from nix-selinux (enforcing boots, zero denials).
                 selinux-enforcing = pkgs.testers.runNixOSTest {
                   imports = [ ./checks/selinux/enforcing.nix ];
@@ -98,6 +103,7 @@
         apparmor-d = final.callPackage ./packages/apparmor-d { };
         secilc = final.callPackage ./packages/secilc { };
         selinux-policy-minimal = final.callPackage ./packages/selinux-policy-minimal { };
+        sbomnix = prev.callPackage ./packages/sbomnix { inherit (prev) sbomnix; };
         minisoc = final.callPackage ./packages/minisoc { };
         minisoc-ui = final.callPackage ./packages/minisoc-ui { };
       };
@@ -113,6 +119,9 @@
         usbguard = import ./modules/usbguard.nix;
         crowdsec = import ./modules/crowdsec.nix;
         shirudo = import ./modules/shirudo.nix;
+        vulnix = import ./modules/vulnix.nix;
+        sbomnix = import ./modules/sbomnix.nix;
+        containerScan = import ./modules/container-scan.nix;
         security = import ./modules/security.nix;
         default = import ./modules/security.nix;
       };

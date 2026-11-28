@@ -238,6 +238,13 @@ those as `low` alerts (`… would deny …`). For fapolicyd, permissive mode is
 taken from `services.fapolicyd.permissive`, since it logs the same line.
 apparmor.d in complain mode logs a lot: keep `wouldBe` off for AppArmor.
 
+Packages with known CVEs are alerts too, with one line format for the three
+scanners: `security.vulnix` ([vulnix.md](vulnix.md)), `security.sbomnix`
+([sbomnix.md](sbomnix.md)) and `security.containerScan` for container images
+([container-scan.md](container-scan.md)): `integrations.{vulnix,sbomnix,containerScan}`,
+sources `vulnix`, `sbomnix`, `container_scan`, event types `vuln_vulnerable`,
+`vuln_secret` and `vuln_scan_failed`.
+
 Planned sources (ClamAV, Snort, Suricata, auditd, Elastic Agent, CrowdSec)
 need no code: declare them as above once the tool writes its log.
 

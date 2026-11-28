@@ -46,6 +46,7 @@ let
       );
       mac_usbguard = mac mlib.usbguardTransform;
       mac_crowdsec = mac mlib.crowdsecTransform;
+      mac_vuln = mac mlib.vulnTransform;
       mac_fapolicyd_perm = mac (
         mlib.macTransforms.fapolicyd {
           wouldBe = false;
@@ -214,6 +215,61 @@ let
       )
       (none "crowdsec-other-dropped" "parse_mac_crowdsec"
         ''time="2026-11-24T16:44:07+01:00" level=info msg="Ip 203.0.113.7 performed 'crowdsecurity/ssh-bf' (6 events over 283ms) at 2026"''
+      )
+      (case "vuln-vulnix-critical" "parse_mac_vuln"
+        ''vulnerable scanner="vulnix" target="system" pname="openssl" version="3.0.13" severity="critical" count="5" max_cvss="9.8" top="CVE-2024-5,CVE-2024-4,CVE-2024-3" cves="CVE-2024-1,CVE-2024-2,CVE-2024-3,CVE-2024-4,CVE-2024-5"''
+        ''
+          assert_eq!(.parsed.severity, "critical")
+          assert_eq!(.parsed.event_type, "vuln_vulnerable")
+          assert_eq!(.parsed.message, "vulnix: openssl 3.0.13 is affected by 5 CVE (critical, max CVSS 9.8): CVE-2024-5,CVE-2024-4,CVE-2024-3 (+2)")
+          assert_eq!(.parsed.cves, ["CVE-2024-1", "CVE-2024-2", "CVE-2024-3", "CVE-2024-4", "CVE-2024-5"])
+          assert_eq!(.parsed.max_cvss, 9.8)
+          assert_eq!(.parsed.scanner, "vulnix")
+          assert!(!exists(.parsed.fixed))
+        ''
+      )
+      (case "vuln-vulnix-unscored" "parse_mac_vuln"
+        ''vulnerable scanner="vulnix" target="system" pname="hello" version="2.12.1" severity="unknown" count="1" max_cvss="0" top="CVE-2026-1" cves="CVE-2026-1"''
+        ''
+          assert_eq!(.parsed.severity, "medium")
+          assert_eq!(.parsed.message, "vulnix: hello 2.12.1 is affected by 1 CVE (medium): CVE-2026-1")
+        ''
+      )
+      (case "vuln-vulnxscan-found-by" "parse_mac_vuln"
+        ''vulnerable scanner="vulnxscan" target="system" pname="curl" version="8.1.0" severity="high" count="1" max_cvss="7.5" top="CVE-2023-38545" cves="CVE-2023-38545" found_by="grype,vulnix"''
+        ''
+          assert_eq!(.parsed.severity, "high")
+          assert_eq!(.parsed.found_by, ["grype", "vulnix"])
+          assert_eq!(.parsed.message, "vulnxscan: curl 8.1.0 is affected by 1 CVE (high, max CVSS 7.5): CVE-2023-38545")
+        ''
+      )
+      (case "vuln-trivy-image" "parse_mac_vuln"
+        ''vulnerable scanner="trivy" target="nginx:1.27@sha256:0123456789ab" pname="openssl" version="3.0.13-r0" severity="low" count="1" max_cvss="3.1" top="CVE-2026-2" cves="CVE-2026-2" fixed="3.0.15-r0" containers="web,proxy"''
+        ''
+          assert_eq!(.parsed.severity, "low")
+          assert_eq!(.parsed.target, "nginx:1.27@sha256:0123456789ab")
+          assert_eq!(.parsed.containers, ["web", "proxy"])
+          assert_eq!(.parsed.message, "trivy: openssl 3.0.13-r0 in nginx:1.27@sha256:0123456789ab is affected by 1 CVE (low, max CVSS 3.1, fix 3.0.15-r0): CVE-2026-2")
+        ''
+      )
+      (case "vuln-trivy-secret" "parse_mac_vuln"
+        ''secret scanner="trivy" target="app:1@sha256:0123456789ab" rule="aws-access-key-id" title="AWS Access Key ID" path="/app/.env"''
+        ''
+          assert_eq!(.parsed.severity, "high")
+          assert_eq!(.parsed.event_type, "vuln_secret")
+          assert_eq!(.parsed.message, "trivy: secret (AWS Access Key ID) in app:1@sha256:0123456789ab at /app/.env")
+        ''
+      )
+      (case "vuln-scan-failed" "parse_mac_vuln" ''scan_failed scanner="vulnix" target="system" rc="2"'' ''
+        assert_eq!(.parsed.severity, "low")
+        assert_eq!(.parsed.event_type, "vuln_scan_failed")
+        assert_eq!(.parsed.message, "vulnix scan failed (rc 2): vulnerability findings are no longer updated")
+      '')
+      (none "vuln-summary-dropped" "parse_mac_vuln"
+        ''scan_done scanner="vulnix" target="system" vulnerable="1" cves="1" whitelisted="0"''
+      )
+      (none "vuln-stderr-dropped" "parse_mac_vuln"
+        "WARNING:vulnix.nix:Skipping closure path without deriver"
       )
       (none "fapolicyd-allow-dropped" "parse_mac_fapolicyd"
         "rule=1 dec=allow perm=open auid=0 pid=1 exe=/x : path=/y ftype=text/plain trust=1"

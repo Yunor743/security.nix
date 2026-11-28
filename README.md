@@ -40,6 +40,7 @@ NixOS packages and modules for endpoint security and detection
 | `secilc`, `selinux-policy-minimal` | SELinux CIL compiler and minimal policy (from nix-selinux) |
 | `shirudo` | shirudo (BPF security platform, pre-release): operator tools and target binary |
 | `shirudo-kernel` | bpf-next with shirudo's patches (signed-loader ABI) on the NixOS kernel configuration |
+| `sbomnix` | sbomnix / vulnxscan (SBOMs and multi-scanner vulnerability reports of Nix closures), with the fixes it needs to build at the locked nixpkgs |
 
 ## NixOS Modules
 
@@ -55,6 +56,9 @@ NixOS packages and modules for endpoint security and detection
 | `security.usbguard` | USBGuard: learn then enforce, devices present at first start allowed, declarative allow-list, rejected interface classes, decision log ([docs](docs/usbguard.md)) |
 | `security.crowdsec` | CrowdSec: local engine + firewall bouncer, sources of the enabled services, simulation then enforce, progressive bans, central API opt-in ([docs](docs/crowdsec.md)) |
 | `security.shirudo` | shirudo: patched bpf-next kernel, TPM, operator tooling and target staging ([docs](docs/shirudo.md)) |
+| `security.vulnix` | vulnix: periodic CVE scan of the runtime system closure, declarative whitelist, one journal line per vulnerable package, MiniSOC alerts ([docs](docs/vulnix.md)) |
+| `security.sbomnix` | sbomnix: SBOM (CycloneDX, SPDX) per generation, vulnxscan (grype + vulnix, OSV.dev / triage opt-in), MiniSOC alerts ([docs](docs/sbomnix.md)) |
+| `security.containerScan` | Trivy scan of the images of Docker, root and rootless Podman containers: vulnerabilities and secrets, unprivileged scanner, MiniSOC alerts ([docs](docs/container-scan.md)) |
 
 Home Manager: `homeManagerModules.minisoc` (`programs.minisoc`, the MiniSOC widget).
 
@@ -490,7 +494,7 @@ The two are mutually exclusive.
 - [x] jit-hater
 - [x] minisoc (local SOC: collector, filtering, triage UI, optional LLM)
 - [ ] kunai
-- [ ] vulnix
+- [x] vulnix
 - [ ] hardened kernel
 - [ ] mineral.nix
 - [ ] lkrg / kspp

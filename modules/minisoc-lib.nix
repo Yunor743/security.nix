@@ -234,6 +234,58 @@ rec {
     .parsed.simulated = simulated
   '';
 
+  # Findings of the vulnerability scanners (security.vulnix, security.sbomnix,
+  # security.containerScan), line format in vulnscan-lib.nix:
+  # vulnerable scanner="trivy" target="nginx:1.27@sha256:…" pname="openssl" version="3.0.13" severity="critical" count="3" max_cvss="9.8" top="CVE-…" cves="CVE-…" fixed="3.0.15"
+  # The severity comes from the scanner; `unknown` (unscored CVE, NVD backlog)
+  # becomes `medium`. A secret found in an image is `high`; a failed scan is
+  # `low`: the scanner went silent.
+  vulnTransform = ''
+    kv = parse_key_value(.raw) ?? {}
+    scanner = string(kv.scanner) ?? "scanner"
+    target = string(kv.target) ?? "?"
+    where = ""
+    if target != "system" && target != "nix-store" { where = " in " + target }
+    if starts_with(.raw, "scan_failed ") {
+      .parsed = {"event_type": "vuln_scan_failed", "severity": "low"}
+      .parsed.message = scanner + " scan" + where + " failed (rc " + (string(kv.rc) ?? "?") + "): vulnerability findings are no longer updated"
+    } else if starts_with(.raw, "secret ") {
+      .parsed = {"event_type": "vuln_secret", "severity": "high"}
+      title = string(kv.title) ?? string(kv.rule) ?? "?"
+      .parsed.message = scanner + ": secret (" + title + ")" + where + " at " + (string(kv.path) ?? "?")
+      .parsed.rule = kv.rule
+      .parsed.path = kv.path
+    } else if starts_with(.raw, "vulnerable ") {
+      pname = string(kv.pname) ?? "?"
+      version = string(kv.version) ?? "?"
+      count = to_int(kv.count) ?? 0
+      score = to_float(kv.max_cvss) ?? 0.0
+      sev = downcase(string(kv.severity) ?? "unknown")
+      if !includes(["critical", "high", "medium", "low"], sev) { sev = "medium" }
+      .parsed = {"event_type": "vuln_vulnerable"}
+      .parsed.severity = sev
+      details = sev
+      if score > 0.0 { details = details + ", max CVSS " + to_string(score) }
+      fixed = string(kv.fixed) ?? ""
+      if fixed != "" { details = details + ", fix " + fixed }
+      more = ""
+      if count > 3 { more = " (+" + to_string(count - 3) + ")" }
+      .parsed.message = scanner + ": " + pname + " " + version + where + " is affected by " + to_string(count) + " CVE (" + details + "): " + (string(kv.top) ?? "") + more
+      .parsed.pname = pname
+      .parsed.version = version
+      .parsed.count = count
+      .parsed.max_cvss = score
+      .parsed.cves = split(string(kv.cves) ?? "", ",")
+      if fixed != "" { .parsed.fixed = fixed }
+      if is_string(kv.found_by) { .parsed.found_by = split(string!(kv.found_by), ",") }
+      if is_string(kv.containers) { .parsed.containers = split(string!(kv.containers), ",") }
+    } else {
+      abort
+    }
+    .parsed.scanner = scanner
+    .parsed.target = target
+  '';
+
   mkVectorConfig =
     {
       sources,

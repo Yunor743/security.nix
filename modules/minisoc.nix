@@ -8,6 +8,27 @@
 let
   cfg = config.services.minisoc;
   mlib = import ./minisoc-lib.nix { inherit lib; };
+
+  # Vulnerability scanner integrations: source name -> unit. The collector
+  # reads the journal from its end, so a scan started at boot (missed timer)
+  # is ordered after it.
+  vulnScanners = {
+    vulnix = {
+      unit = "vulnix";
+      inherit (cfg.integrations.vulnix) enable;
+      moduleEnabled = config.security.vulnix.enable or false;
+    };
+    sbomnix = {
+      unit = "sbomnix";
+      inherit (cfg.integrations.sbomnix) enable;
+      moduleEnabled = config.security.sbomnix.enable or false;
+    };
+    container_scan = {
+      unit = "container-scan";
+      inherit (cfg.integrations.containerScan) enable;
+      moduleEnabled = config.security.containerScan.enable or false;
+    };
+  };
   inherit (mlib) severities;
 
   sevType = lib.types.enum severities;
@@ -465,6 +486,40 @@ in
       default = config.services.crowdsec.enable or false;
       defaultText = lib.literalExpression "config.services.crowdsec.enable";
       description = "Alert on CrowdSec decisions: bans (`high`), simulated ones (`medium`).";
+    };
+
+    integrations.vulnix.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.security.vulnix.enable or false;
+      defaultText = lib.literalExpression "config.security.vulnix.enable";
+      description = ''
+        Alert on packages of the system with known CVEs (security.vulnix):
+        one alert per package, severity from the highest CVSS score. The
+        same finding on the next scan only counts as an occurrence; a new CVE
+        for the package is a new alert. A failed scan is a `low` alert.
+      '';
+    };
+
+    integrations.sbomnix.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.security.sbomnix.enable or false;
+      defaultText = lib.literalExpression "config.security.sbomnix.enable";
+      description = ''
+        Alert on the vulnxscan findings of security.sbomnix (grype + vulnix,
+        OSV.dev on opt-in), as for `integrations.vulnix`, with the scanners
+        that found them (`found_by`) and, with triage, the fixed version.
+      '';
+    };
+
+    integrations.containerScan.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = config.security.containerScan.enable or false;
+      defaultText = lib.literalExpression "config.security.containerScan.enable";
+      description = ''
+        Alert on the Trivy findings of security.containerScan: one alert per
+        package and image (severity from Trivy), and `high` alerts on secrets
+        found in images.
+      '';
     };
 
     integrations.fapolicyd = {
@@ -1058,6 +1113,21 @@ in
               transform = lib.mkDefault mlib.crowdsecTransform;
             };
           })
+          # Vulnerability scanners: same line format, one source per unit.
+          (lib.mkMerge (
+            lib.mapAttrsToList (
+              name: s:
+              lib.mkIf s.enable {
+                ${name} = {
+                  type = "journald";
+                  journald.matches._SYSTEMD_UNIT = lib.mkDefault [ "${s.unit}.service" ];
+                  parser = "raw";
+                  readFrom = lib.mkDefault "end";
+                  transform = lib.mkDefault mlib.vulnTransform;
+                };
+              }
+            ) vulnScanners
+          ))
           (lib.mkIf cfg.integrations.fapolicyd.enable {
             fapolicyd = {
               type = "journald";
@@ -1073,6 +1143,15 @@ in
             };
           })
         ];
+
+        systemd.services = lib.mkMerge (
+          lib.mapAttrsToList (
+            _: s:
+            lib.mkIf (s.enable && s.moduleEnabled) {
+              ${s.unit}.after = [ "minisoc-collector.service" ];
+            }
+          ) vulnScanners
+        );
 
         assertions = [
           {

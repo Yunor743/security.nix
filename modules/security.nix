@@ -10,5 +10,8 @@
     ./usbguard.nix
     ./crowdsec.nix
     ./shirudo.nix
+    ./vulnix.nix
+    ./sbomnix.nix
+    ./container-scan.nix
   ];
 }
